@@ -40,7 +40,7 @@ class AscendApp(
         self.tab = 1
         self.events: list = []
         self.dialog_open = False
-        self.form = {"name": "", "weight": "", "height": "", "experienced": None, "equipment": set()}
+        self.form = {"name": "", "weight": "", "height": "", "experienced": None, "equipment": set(), "sex": None, "goals": set()}
         self.step = 0
         self.error = ""
         self.intro_done = False
@@ -73,6 +73,12 @@ class AscendApp(
     def refresh_day(self, animate=False):
         self.events += self.engine.apply_penalty()
         self.engine.ensure_daily_quest()
+        if self.engine.profile and not self.engine.goals_known() \
+                and not any(ev.kind == "ask_goals" for ev in self.events):
+            self.events.append(Event("ask_goals", {}))
+        if self.engine.profile and not self.engine.sex_known() \
+                and not any(ev.kind == "ask_sex" for ev in self.events):
+            self.events.append(Event("ask_sex", {}))
         if self.engine.weight_due() and not self.weigh_open \
                 and not any(ev.kind == "weigh_in" for ev in self.events):
             self.events.append(Event("weigh_in", {}))

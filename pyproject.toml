@@ -12,3 +12,9 @@ company = "Ascend"
 
 [tool.flet.app]
 path = "src"
+
+# path_provider_android 2.3+ обращается к Android через JNI и на части устройств
+# падает при старте: ClassNotFoundException "Landroid/content/Context;".
+# Версии 2.2.x работают через обычные каналы Flutter.
+[tool.flet.flutter.pubspec.dependency_overrides]
+path_provider_android = ">=2.2.0 <2.3.0"

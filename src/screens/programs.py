@@ -140,7 +140,7 @@ class ProgramsScreen:
         index = min(done, prog_data.TOTAL_SESSIONS - 1)
         test = index == prog_data.TOTAL_SESSIONS - 1
         week = program.week_of(index)
-        drills = program.session(index)
+        drills = program.session(index, e.program_factor(program))
 
         progress, _ = ring(done / prog_data.TOTAL_SESSIONS, 86, color, ft.Column([
             text(f"{done}/{prog_data.TOTAL_SESSIONS}", TEXT, 18, ft.FontWeight.W_800, mono=True),
@@ -386,6 +386,7 @@ class ProgramsScreen:
         active = e.program()
         is_active = bool(active and active.id == program.id)
         reason = "" if is_active else e.can_start_program(program)
+        factor = e.program_factor(program)
 
         def close(_=None):
             self.page.pop_dialog()
@@ -414,7 +415,7 @@ class ProgramsScreen:
                 border=ft.Border.all(1, LINE),
                 content=ft.Column([
                     ft.Row([kicker(f"Неделя {w}", color), text(week.focus, MUTED, 11)], spacing=8, wrap=True),
-                    *[drill_row(d) for d in week.drills],
+                    *[drill_row(d.scaled(factor)) for d in week.drills],
                 ], spacing=6),
             ))
         weeks.append(ft.Container(
@@ -424,7 +425,7 @@ class ProgramsScreen:
             border=ft.Border.all(1, alpha(GOLD, 0.4)),
             content=ft.Column([
                 ft.Row([icon(ft.Icons.STAR_ROUNDED, GOLD, 16), kicker("Испытание · тренировка 12", GOLD)], spacing=6),
-                *[drill_row(d) for d in program.test],
+                *[drill_row(d.scaled(factor)) for d in program.test],
             ], spacing=6),
         ))
 

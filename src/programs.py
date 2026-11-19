@@ -4,7 +4,7 @@
 Gymnastic Bodies и др.). Источники сходятся в порядке шагов, но не в цифрах,
 поэтому объёмы взяты консервативно: связки и сухожилия адаптируются медленнее мышц.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from game import Branch, Equipment
 
@@ -35,6 +35,13 @@ class Drill:
         side = " на сторону" if self.per_side else ""
         return f"{self.sets} × {self.fmt()}{side}"
 
+    def scaled(self, factor: float) -> "Drill":
+        """Облегчённая версия: подходы те же, повторы/секунды меньше. Одиночные попытки не меняются."""
+        if factor == 1.0 or self.value <= 1:
+            return self
+        value = max(3, round(self.value * factor)) if self.seconds else max(1, round(self.value * factor))
+        return replace(self, value=min(value, self.value))
+
 
 @dataclass(frozen=True)
 class Week:
@@ -59,11 +66,13 @@ class Program:
     def available_with(self, equipment: set) -> bool:
         return all(e in equipment for e in self.equipment)
 
-    def session(self, index: int) -> tuple:
+    def session(self, index: int, factor: float = 1.0) -> tuple:
         """Упражнения тренировки по её номеру (0…11). Последняя — испытание."""
         if index >= TOTAL_SESSIONS - 1:
-            return self.test
-        return self.weeks[min(index // SESSIONS_PER_WEEK, WEEKS - 1)].drills
+            drills = self.test
+        else:
+            drills = self.weeks[min(index // SESSIONS_PER_WEEK, WEEKS - 1)].drills
+        return tuple(d.scaled(factor) for d in drills)
 
     @staticmethod
     def week_of(index: int) -> int:

@@ -27,7 +27,7 @@ EQUIPMENT_ICONS = {
 }
 
 INTRO = "Система активирована.\nОбнаружен кандидат на пробуждение.\n\nНачать регистрацию?"
-ONBOARDING_STEPS = 4
+ONBOARDING_STEPS = 6
 
 
 def fmt_seconds(seconds: int) -> str:

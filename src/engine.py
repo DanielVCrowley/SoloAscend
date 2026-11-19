@@ -68,13 +68,18 @@ class Engine:
     def rank(self) -> game.Rank:
         return game.rank_for(self.level().level)
 
-    def create_profile(self, name: str, weight_kg: float, height_cm: int, experienced: bool, equipment: set):
+    def create_profile(self, name: str, weight_kg: float, height_cm: int, experienced: bool, equipment: set,
+                       sex: game.Sex = game.Sex.MALE, goals=()):
         day = game.today()
+        load = game.Load(sex, game.bmi_tier(game.bmi(weight_kg, height_cm))[0])
         self.state["profile"] = {
             "name": name,
             "weight_kg": weight_kg,
             "height_cm": height_cm,
             "experienced": experienced,
+            "sex": sex.value,
+            "weight_factor": load.weight_factor,
+            "goals": [g.key for g in goals],
             "equipment": [e.name for e in equipment],
             "total_xp": 0,
             "streak": 0,
@@ -87,8 +92,8 @@ class Engine:
         }
         progress = {}
         for branch in Branch:
-            step = game.start_step(branch, equipment, experienced)
-            target = game.start_target(step)
+            step = game.start_step(branch, equipment, experienced, load)
+            target = game.start_target(step, load)
             progress[branch.name] = {
                 "step": step.id,
                 "target": target,
@@ -96,7 +101,8 @@ class Engine:
                 "quest_day": day,
                 "quest_step": step.id,
                 "quest_target": target,
-                "quest_sets": game.sets_for(game.Rank.E),
+                "quest_sets": game.quest_sets(game.Rank.E, branch, goals),
+                "stage": 0,
             }
         self.state["progress"] = progress
         self.state["log"] = []
@@ -124,10 +130,20 @@ class Engine:
         """Если упражнение из сохранения убрали из каталога — ставим стартовую ступень ветки."""
         changed = False
         equipment = self.equipment()
+        for branch in Branch:
+            if branch.name not in self.progress:
+                step = game.start_step(branch, equipment, self.profile["experienced"], self.load())
+                target = game.start_target(step, self.load())
+                self.progress[branch.name] = {
+                    "step": step.id, "target": target, "xp": 0, "stage": 0,
+                    "quest_day": None, "quest_step": step.id, "quest_target": target,
+                    "quest_sets": game.sets_for(self.rank()),
+                }
+                changed = True
         for name, item in self.progress.items():
             if item["step"] not in game.STEP_BY_ID:
-                step = game.start_step(Branch[name], equipment, self.profile["experienced"])
-                item.update(step=step.id, target=game.start_target(step))
+                step = game.start_step(Branch[name], equipment, self.profile["experienced"], self.load())
+                item.update(step=step.id, target=game.start_target(step, self.load()), stage=0)
                 changed = True
             if item.get("quest_step") not in game.STEP_BY_ID:
                 item.update(quest_step=item["step"], quest_target=item["target"])
@@ -168,9 +184,107 @@ class Engine:
         if not p or not self.today_done() or self.cooldown_result():
             return []
         p.update(cooldown_day=game.today(), cooldown_result="done" if completed else "skipped")
-        events = self._add_xp(game.COOLDOWN_BONUS) if completed else []
+        events = []
+        if completed:
+            bonus = game.with_streak(game.COOLDOWN_BONUS, self.active_streak())
+            events = [Event("cooldown", {"bonus": bonus})] + self._add_xp(bonus)
         self._save()
         return events
+
+    # ---------- пол ----------
+
+    def sex(self) -> game.Sex:
+        """Пол игрока. В старых профилях поля нет — считаем мужским, пока игрок не выберет."""
+        value = self.profile.get("sex") if self.profile else None
+        return game.Sex(value) if value in ("male", "female") else game.Sex.MALE
+
+    def sex_known(self) -> bool:
+        return bool(self.profile) and self.profile.get("sex") in ("male", "female")
+
+    def program_factor(self, program) -> float:
+        return game.sex_factor(program.branch, self.load())
+
+    def set_sex(self, sex: game.Sex):
+        """Смена пола пересчитывает нормы по этапу ступени — этап (пройденные дни) сохраняется."""
+        p = self.profile
+        if not p:
+            return
+        old = self.applied_load()
+        p["sex"] = sex.value
+        self._rescale(old)
+        self._save()
+
+    # ---------- нагрузка по весу ----------
+
+    def bmi(self) -> float:
+        return game.bmi(self.profile["weight_kg"], self.profile["height_cm"])
+
+    def load(self) -> game.Load:
+        """Нагрузка игрока: пол и поправка на ИМТ."""
+        if not self.profile:
+            return game.BASE_LOAD
+        return game.Load(self.sex(), game.bmi_tier(self.bmi())[0])
+
+    def applied_load(self) -> game.Load:
+        """Нагрузка, под которую сейчас рассчитаны нормы в сохранении."""
+        return game.Load(self.sex(), self.profile.get("weight_factor", 1.0))
+
+    def _rescale(self, old: game.Load):
+        """Пересчитывает текущие нормы под новую нагрузку. Этап ступени (пройденные дни) сохраняется."""
+        new = self.load()
+        self.profile["weight_factor"] = new.weight_factor
+        if new == old:
+            return
+        for pr in self.progress.values():
+            step = game.STEP_BY_ID[pr["step"]]
+            stage = pr.get("stage", game.stage_of(step, pr["target"], old))
+            # норма сегодняшнего квеста: по текущей ступени — тот же этап, иначе — этап по её значению
+            quest_step = game.STEP_BY_ID[pr["quest_step"]]
+            if quest_step is step and pr["quest_target"] == pr["target"]:
+                quest_stage = stage
+            else:
+                quest_stage = game.stage_of(quest_step, pr["quest_target"], old)
+            pr.update(
+                stage=stage,
+                target=game.target_at(step, stage, new),
+                quest_target=game.target_at(quest_step, quest_stage, new),
+                quest_stage=quest_stage,
+            )
+
+    # ---------- цели ----------
+
+    def goals(self) -> list:
+        keys = self.profile.get("goals") if self.profile else None
+        return [g for g in (game.Goal.from_key(k) for k in keys or []) if g]
+
+    def goals_known(self) -> bool:
+        return bool(self.profile) and "goals" in self.profile
+
+    def plan(self) -> game.GoalPlan:
+        return game.goal_plan(self.goals())
+
+    def rest_seconds(self) -> int:
+        return self.plan().rest
+
+    def cooldown_moves(self) -> list:
+        return game.COOLDOWN + (game.COOLDOWN_FLEX if self.plan().flex else [])
+
+    def set_goals(self, goals) -> bool:
+        """Сохраняет цели. Если сегодняшний квест ещё не начат — он сразу пересобирается под них.
+        Возвращает True, если изменения применились уже сегодня."""
+        p = self.profile
+        if not p:
+            return False
+        p["goals"] = [g.key for g in goals]
+        today_now = not self.quest_accepted() and not self.day_sets(game.today())
+        if today_now:
+            p["quest_branches_day"] = None
+            for item in self.progress.values():
+                item["quest_day"] = None
+        self._save()
+        if today_now:
+            self.ensure_daily_quest()
+        return today_now
 
     # ---------- ежедневный замер веса ----------
 
@@ -186,15 +300,25 @@ class Engine:
         """Сегодня вес ещё не вводили и не пропускали."""
         return bool(self.profile) and self.profile.get("weight_asked_day") != game.today()
 
-    def record_weight(self, kg: float) -> float:
+    def record_weight(self, kg: float) -> list:
+        """Сохраняет замер. Если вес перешёл в другую категорию ИМТ — нормы пересчитываются."""
         p = self.profile
         kg = round(min(250.0, max(30.0, kg)), 1)
         day = game.today()
+        old_load, old_label = self.applied_load(), game.bmi_tier(self.bmi())[1]
         entries = [w for w in (p.get("weights") or [{"day": p["created_day"], "kg": p["weight_kg"]}]) if w["day"] != day]
         entries.append({"day": day, "kg": kg})
         p.update(weights=entries, weight_kg=kg, weight_asked_day=day)
+        events = []
+        if self.load() != old_load:
+            self._rescale(old_load)
+            factor, label = game.bmi_tier(self.bmi())
+            events.append(Event("load", {
+                "up": factor > old_load.weight_factor, "factor": factor, "label": label,
+                "old_label": old_label, "bmi": round(self.bmi(), 1),
+            }))
         self._save()
-        return kg
+        return events
 
     def skip_weight(self):
         if self.profile:
@@ -243,7 +367,7 @@ class Engine:
 
     def session_drills(self) -> tuple:
         program = self.program()
-        return program.session(self.program_state()["session"]) if program else ()
+        return program.session(self.program_state()["session"], self.program_factor(program)) if program else ()
 
     def session_started(self) -> bool:
         return bool(self.program()) and self.program_state().get("marks_day") == game.today()
@@ -291,15 +415,16 @@ class Engine:
         state = self.program_state()
         number = state["session"] + 1
         state.update(session=number, last_day=game.today(), marks=[], marks_day=None)
-        gained = programs.SESSION_XP
-        events = [Event("program_session", {"program": program, "number": number, "xp": programs.SESSION_XP})]
+        streak = self.active_streak()
+        gained = game.with_streak(programs.SESSION_XP, streak)
+        events = [Event("program_session", {"program": program, "number": number, "xp": gained})]
         if number >= programs.TOTAL_SESSIONS:
-            gained += programs.PROGRAM_XP
+            gained = game.with_streak(programs.SESSION_XP + programs.PROGRAM_XP, streak)
             done = self.profile.setdefault("programs_done", [])
             if program.id not in done:
                 done.append(program.id)
             self.profile["program"] = None
-            events = [Event("program_done", {"program": program, "xp": programs.SESSION_XP + programs.PROGRAM_XP})]
+            events = [Event("program_done", {"program": program, "xp": gained})]
         pr = self.progress.get(program.branch.name)
         if pr:
             pr["xp"] += gained
@@ -319,8 +444,8 @@ class Engine:
             "rank": game.rank_for(after),
             "rank_up": game.rank_for(after) != game.rank_for(before),
             "unlocked": [
-                b for b in game.quest_branches(game.rank_for(after))
-                if b not in game.quest_branches(game.rank_for(before))
+                b for b in game.quest_branches(game.rank_for(after), self.goals())
+                if b not in game.quest_branches(game.rank_for(before), self.goals())
             ],
         })]
 
@@ -328,17 +453,22 @@ class Engine:
         if not self.profile:
             return
         day = game.today()
-        sets = game.sets_for(self.rank())
+        rank, goals = self.rank(), self.goals()
         changed = self._migrate_steps()
+        if self.applied_load() != self.load():
+            # профиль создан до учёта веса или вес меняли вне замера — подгоняем нормы
+            self._rescale(self.applied_load())
+            changed = True
         if self.profile.get("quest_branches_day") != day:
             self.profile.update(
-                quest_branches=[b.name for b in game.quest_branches(self.rank())],
+                quest_branches=[b.name for b in game.quest_branches(rank, goals)],
                 quest_branches_day=day,
             )
             changed = True
-        for item in self.progress.values():
+        for name, item in self.progress.items():
             if item["quest_day"] != day:
-                item.update(quest_day=day, quest_step=item["step"], quest_target=item["target"], quest_sets=sets)
+                item.update(quest_day=day, quest_step=item["step"], quest_target=item["target"],
+                            quest_sets=game.quest_sets(rank, Branch[name], goals), quest_stage=item.get("stage"))
                 changed = True
         if changed:
             self._save()
@@ -351,7 +481,7 @@ class Engine:
         p = self.profile
         if p and p.get("quest_branches_day") == game.today():
             return [Branch[name] for name in p["quest_branches"]]
-        return game.quest_branches(self.rank()) if p else []
+        return game.quest_branches(self.rank(), self.goals()) if p else []
 
     def quest(self) -> list:
         day = game.today()
@@ -365,7 +495,7 @@ class Engine:
             items.append(QuestItem(
                 branch=branch,
                 step=game.STEP_BY_ID[pr["quest_step"] if fresh else pr["step"]],
-                sets=pr["quest_sets"] if fresh else game.sets_for(self.rank()),
+                sets=pr["quest_sets"] if fresh else game.quest_sets(self.rank(), branch, self.goals()),
                 target=pr["quest_target"] if fresh else pr["target"],
                 done=done,
             ))
@@ -380,8 +510,25 @@ class Engine:
             for b in branches
         )
 
+    def active_streak(self) -> int:
+        """Серия, которая сейчас даёт бонус: если вчера и сегодня квест не закрыт — серия прервана."""
+        p = self.profile
+        if not p or p["last_completed_day"] < game.today() - 1:
+            return 0
+        return p["streak"]
+
+    def streak_bonus(self) -> int:
+        return game.streak_bonus(self.active_streak())
+
     def today_done(self) -> bool:
         return bool(self.profile) and self.profile["last_completed_day"] == game.today()
+
+    def _quest_stage(self, pr: dict, step) -> int:
+        """Этап сегодняшней нормы — если он известен и совпадает с нормой (иначе XP по общей шкале)."""
+        stage = pr.get("quest_stage")
+        if stage is None or game.target_at(step, stage, self.load()) != pr["quest_target"]:
+            return None
+        return stage
 
     def log_set(self, branch: Branch, value: int) -> list:
         p = self.profile
@@ -394,7 +541,8 @@ class Engine:
             return []
 
         step = game.STEP_BY_ID[pr["quest_step"]]
-        xp = game.xp_for_set(step, value)
+        xp = game.with_streak(game.xp_for_set(step, value, self.load(), self._quest_stage(pr, step)),
+                              self.active_streak())
         self.log.append({
             "day": day,
             "time": time.time(),
@@ -409,20 +557,31 @@ class Engine:
         values = [s["value"] for s in branch_sets] + [value]
         cleared = len(values) >= pr["quest_sets"] and all(v >= pr["quest_target"] for v in values)
         if cleared and pr["step"] == step.id:
-            if pr["target"] >= step.goal:
+            sex = self.load()
+            stage = pr.get("stage", game.stage_of(step, pr["target"], sex))
+            # ступень пройдена, когда пройдены все этапы — одинаково для всех, даже если
+            # из-за округления норма девушки дошла до цели раньше последнего этапа
+            if stage >= game.stage_count(step) and pr["target"] >= game.goal_for(step, sex):
                 nxt = game.next_step(step, self.equipment())
                 if nxt:
-                    pr.update(step=nxt.id, target=game.start_target(nxt))
+                    pr.update(step=nxt.id, target=game.start_target(nxt, sex), stage=0)
                     events.append(Event("skill", {"step": nxt}))
             else:
-                pr["target"] = min(step.goal, pr["target"] + game.target_increment(step))
+                # этап растёт на 1 у всех; норма считается из этапа — у девушек шаги меньше
+                stage += 1
+                pr.update(stage=stage, target=max(pr["target"], game.target_at(step, stage, sex)))
 
         gained = xp
         if self.quest_done() and p["last_completed_day"] != day:
             streak = p["streak"] + 1 if p["last_completed_day"] == day - 1 else 1
-            gained += game.QUEST_BONUS
+            before_pct = game.streak_bonus(streak - 1)
             p.update(streak=streak, best_streak=max(p["best_streak"], streak), last_completed_day=day)
-            events.append(Event("quest", {"bonus": game.QUEST_BONUS, "streak": streak}))
+            bonus = game.with_streak(game.QUEST_BONUS, streak)
+            gained += bonus
+            events.append(Event("quest", {
+                "bonus": bonus, "streak": streak, "pct": game.streak_bonus(streak),
+                "new_tier": game.streak_bonus(streak) > before_pct,
+            }))
         events += self._add_xp(gained)
         self._save()
         return events

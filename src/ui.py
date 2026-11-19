@@ -24,6 +24,7 @@ BRANCH_ICONS = {
     Branch.PULL: ft.Icons.SPORTS_GYMNASTICS,
     Branch.LEGS: ft.Icons.DIRECTIONS_RUN,
     Branch.CORE: ft.Icons.SELF_IMPROVEMENT,
+    Branch.CARDIO: ft.Icons.FAVORITE,
 }
 
 STAT_ICONS = {

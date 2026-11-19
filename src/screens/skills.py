@@ -26,7 +26,7 @@ class SkillsScreen:
             unlocked = sum(1 for s in ladder if game.tier(s) <= current_tier and s.available_with(equipment))
             available = sum(1 for s in ladder if s.available_with(equipment))
 
-            in_quest = branch in game.quest_branches(e.rank())
+            in_quest = branch in game.quest_branches(e.rank(), e.goals())
             rows = [ft.Row([
                 icon_badge(BRANCH_ICONS[branch], color, 44),
                 ft.Column([
@@ -34,7 +34,8 @@ class SkillsScreen:
                     text(f"{branch.stat.value} · {pr['xp']} XP", MUTED, 12, mono=True),
                 ], spacing=2, expand=True),
                 pill(f"{unlocked}/{available}", color) if in_quest
-                else pill(f"с ранга {game.QUEST_UNLOCK[branch].value}", FAINT, ft.Icons.LOCK_OUTLINE),
+                else pill("не в целях" if branch is Branch.CARDIO else f"с ранга {game.QUEST_UNLOCK[branch].value}",
+                          FAINT, ft.Icons.LOCK_OUTLINE),
             ], spacing=12)]
 
             for i, step in enumerate(ladder):
@@ -68,8 +69,8 @@ class SkillsScreen:
                 )]
                 if is_current:
                     details += [
-                        text(f"Минимум {step.fmt(pr['target'])} · цель {step.fmt(step.goal)} в каждом подходе{step.side_note}", MUTED, 12),
-                        bar(pr["target"] / step.goal, ACCENT, 6),
+                        text(f"Минимум {step.fmt(pr['target'])} · цель {step.fmt(game.goal_for(step, e.load()))} в каждом подходе{step.side_note}", MUTED, 12),
+                        bar(pr["target"] / game.goal_for(step, e.load()), ACCENT, 6),
                     ]
                     if step.tip:
                         details.append(text(step.tip, FAINT, 12))

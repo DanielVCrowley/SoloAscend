@@ -14,10 +14,10 @@ from ui import (
 
 class RoutineScreen:
     def routine_moves(self):
-        return game.WARMUP if self.routine and self.routine["kind"] == "warmup" else game.COOLDOWN
+        return game.WARMUP if self.routine and self.routine["kind"] == "warmup" else self.engine.cooldown_moves()
 
     def start_routine(self, kind):
-        moves = game.WARMUP if kind == "warmup" else game.COOLDOWN
+        moves = game.WARMUP if kind == "warmup" else self.engine.cooldown_moves()
         self.rest_end = None
         self.routine = {"kind": kind, "index": 0, "end": time.monotonic() + moves[0].seconds, "paused": None, "skipped": 0}
         self.render(animate=True)
@@ -59,8 +59,6 @@ class RoutineScreen:
             events.append(Event("warmup", {}))
         elif kind == "cooldown":
             events = self.engine.finish_cooldown(completed)
-            if completed:
-                events.insert(0, Event("cooldown", {"bonus": game.COOLDOWN_BONUS}))
         self.render(animate=True)
         self.push(events)
 

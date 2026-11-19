@@ -3,8 +3,9 @@ import flet as ft
 import flet.canvas as cv
 
 import game
-from common import EQUIPMENT_ICONS, fmt_day
+from common import EQUIPMENT_ICONS, fmt_day, plural
 from programs import PROGRAM_BY_ID, TOTAL_SESSIONS
+from screens.onboarding import GOAL_COLORS, GOAL_ICONS
 from ui import (
     ACCENT, CARD, DANGER, FAINT, GOLD, LINE, MUTED, RANK_COLORS, STAT_COLORS, STAT_ICONS, SUCCESS, TEXT,
     alpha, bar, card, ghost_button, icon, icon_badge, kicker, page_header, pill, ring, stat_row, text,
@@ -12,6 +13,62 @@ from ui import (
 
 
 class StatusScreen:
+    def goals_card(self):
+        e = self.engine
+        goals = e.goals()
+        chips = [pill(g.title, GOAL_COLORS[g], GOAL_ICONS[g]) for g in goals] or [text("Цели не выбраны", MUTED)]
+        return card([
+            ft.Row([
+                kicker("Цели", ACCENT),
+                ghost_button("Изменить", lambda _: self.show_goals_dialog(), ACCENT, ft.Icons.EDIT_OUTLINED),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row(chips, wrap=True, spacing=6, run_spacing=6),
+            *([self.plan_summary(e.plan())] if goals else []),
+        ], ACCENT, glow=0.08, spacing=10)
+
+    def streak_ladder(self):
+        """Бонус к опыту за серию: ступени, текущий бонус и сколько дней до следующего."""
+        streak = self.engine.active_streak()
+        pct = game.streak_bonus(streak)
+        nxt = game.next_streak_tier(streak)
+        chips = []
+        for days, tier_pct in game.STREAK_TIERS:
+            reached = streak >= days
+            current = reached and tier_pct == pct
+            chip = ft.Container(
+                expand=True,
+                padding=ft.Padding.symmetric(vertical=8),
+                border_radius=ft.BorderRadius.all(12),
+                bgcolor=alpha(GOLD, 0.22 if current else (0.1 if reached else 0.0)),
+                border=ft.Border.all(1.5 if current else 1, GOLD if reached else LINE),
+                content=ft.Column([
+                    text(f"+{tier_pct}%", GOLD if reached else MUTED, 15, ft.FontWeight.W_800, mono=True),
+                    text(f"{days} дн.", TEXT if reached else FAINT, 11),
+                ], spacing=0, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            )
+            chips.append(self.pulse(chip, 1.05) if current else chip)
+
+        if nxt:
+            days, tier_pct = nxt
+            prev = max((d for d, _ in game.STREAK_TIERS if d <= streak), default=0)
+            left = days - streak
+            status = f"До +{tier_pct}%: ещё {left} {plural(left, 'день', 'дня', 'дней')}"
+            progress = bar((streak - prev) / (days - prev), GOLD, 6)
+        else:
+            status, progress = "Максимальный бонус серии", bar(1, GOLD, 6)
+
+        return [
+            ft.Row([
+                text("Бонус к опыту", TEXT, 14, ft.FontWeight.W_700),
+                pill(f"+{pct}% XP" if pct else "нет", GOLD if pct else MUTED, ft.Icons.LOCAL_FIRE_DEPARTMENT),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row(chips, spacing=6),
+            progress,
+            text(status, MUTED, 12),
+            text("Действует на весь опыт: подходы, награду за квест, заминку и программы. "
+                 "Пропуск дня обнуляет серию.", FAINT, 11),
+        ]
+
     def weight_card(self):
         """Вес: крупное текущее значение, изменение за неделю, линия замеров и таблица последних."""
         e = self.engine
@@ -140,7 +197,8 @@ class StatusScreen:
                     text(f"Уровень {lvl.level}", rank_color, 16, ft.FontWeight.W_600),
                     text(f"{lvl.current} / {lvl.needed} XP до следующего", MUTED, 12, mono=True),
                     ft.Row([
-                        pill(f"{p['streak']} дн.", GOLD, ft.Icons.LOCAL_FIRE_DEPARTMENT),
+                        pill(f"{e.active_streak()} дн." + (f" · +{e.streak_bonus()}%" if e.streak_bonus() else ""),
+                             GOLD, ft.Icons.LOCAL_FIRE_DEPARTMENT),
                         pill("Квест ✓" if done else "Квест ✗", SUCCESS if done else DANGER),
                     ], spacing=6, wrap=True),
                 ], spacing=4, expand=True),
@@ -186,22 +244,38 @@ class StatusScreen:
         return [
             r(page_header("Статус", "Профиль игрока")),
             r(hero),
+            r(self.goals_card()),
             r(self.weight_card()),
             *skills_card,
             r(ft.Column([kicker("Характеристики", MUTED), ft.ResponsiveRow(tiles, spacing=10)], spacing=10)),
             r(card([
                 kicker("Серия", GOLD),
                 ft.Row([
-                    self.metric(str(p["streak"]), "подряд", GOLD),
+                    self.metric(str(e.active_streak()), "подряд", GOLD),
                     self.metric(str(p["best_streak"]), "рекорд", TEXT),
                     self.metric(str(len(e.history())), "дней всего", ACCENT),
                 ], alignment=ft.MainAxisAlignment.SPACE_AROUND),
+                ft.Divider(color=LINE, height=1),
+                *self.streak_ladder(),
             ], GOLD, glow=0.08)),
             r(card([
                 kicker("Тело", MUTED),
                 stat_row("Вес", f"{p['weight_kg']:.1f} кг", leading=ft.Icons.MONITOR_WEIGHT),
                 stat_row("Рост", f"{p['height_cm']} см", leading=ft.Icons.HEIGHT),
-                stat_row("ИМТ", f"{p['weight_kg'] / (meters * meters):.1f}", leading=ft.Icons.FAVORITE_BORDER),
+                stat_row("ИМТ", f"{e.bmi():.1f} · {game.bmi_tier(e.bmi())[1].lower()}", leading=ft.Icons.FAVORITE_BORDER),
+                stat_row(
+                    "Нагрузка",
+                    "стандартная" if e.load().weight_factor == 1 else f"−{round((1 - e.load().weight_factor) * 100)}% из-за веса",
+                    GOLD if e.load().weight_factor < 1 else TEXT,
+                    leading=ft.Icons.SPEED,
+                ),
+                ft.Row([
+                    ft.Container(content=stat_row(
+                        "Пол", e.sex().title if e.sex_known() else "не указан",
+                        leading=ft.Icons.MALE if e.sex() is game.Sex.MALE else ft.Icons.FEMALE,
+                    ), expand=True),
+                    ghost_button("Изменить", lambda _: self.show_sex_dialog(), ACCENT),
+                ], spacing=4),
                 ft.Divider(color=LINE, height=1),
                 kicker("Инвентарь", MUTED),
                 ft.Row(

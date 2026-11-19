@@ -58,6 +58,11 @@ class QuestScreen:
         controls += [r(self.quest_card(q)) for q in items]
         return controls
 
+    def streak_pill(self):
+        """Плашка бонуса серии — только если он действует."""
+        pct = self.engine.streak_bonus()
+        return [pill(f"+{pct}% XP · серия", GOLD, ft.Icons.LOCAL_FIRE_DEPARTMENT)] if pct else []
+
     def start_rest(self, seconds: int):
         self.rest_total = seconds
         self.rest_end = time.monotonic() + seconds
@@ -136,7 +141,7 @@ class QuestScreen:
         info = [
             text("Квест выполнен" if done else "Квест принят", TEXT, 20, ft.FontWeight.W_800),
             text("Награда получена. Осталась заминка." if done else "Выполни минимум в каждом подходе до конца дня.", MUTED, 13),
-            ft.Row([pill(f"+{game.QUEST_BONUS} XP", SUCCESS, ft.Icons.EMOJI_EVENTS)], wrap=True),
+            ft.Row([pill(f"+{game.QUEST_BONUS} XP", SUCCESS, ft.Icons.EMOJI_EVENTS), *self.streak_pill()], wrap=True),
         ]
         if not done:
             info[2].controls.append(pill(f"−{game.PENALTY_PER_DAY} XP за пропуск", DANGER))
@@ -221,6 +226,7 @@ class QuestScreen:
             ft.Divider(color=LINE, height=1),
             ft.Row([
                 pill(f"+{game.QUEST_BONUS} XP", SUCCESS, ft.Icons.EMOJI_EVENTS),
+                *self.streak_pill(),
                 pill(f"−{game.PENALTY_PER_DAY} XP за пропуск", DANGER, ft.Icons.WARNING_AMBER),
             ], wrap=True, spacing=6),
             warm_block,
@@ -229,9 +235,10 @@ class QuestScreen:
         ], ACCENT, glow=0.22, spacing=14)
 
     def cooldown_offer(self):
-        minutes = round(sum(m.seconds for m in game.COOLDOWN) / 60)
+        moves = self.engine.cooldown_moves()
+        minutes = round(sum(m.seconds for m in moves) / 60)
         chips = ft.Row(
-            [pill(m.name, ACCENT_2) for m in game.COOLDOWN],
+            [pill(m.name, ACCENT_2) for m in moves],
             wrap=True, spacing=6, run_spacing=6,
         )
         return self.slide_in(card([
@@ -243,7 +250,7 @@ class QuestScreen:
                 ], spacing=2, expand=True),
                 pill(f"+{game.COOLDOWN_BONUS} XP", ACCENT_2),
             ], spacing=12),
-            text(f"{len(game.COOLDOWN)} упражнений · ~{minutes} мин. Снимает напряжение и ускоряет восстановление. "
+            text(f"{len(moves)} упражнений · ~{minutes} мин. Снимает напряжение и ускоряет восстановление. "
                  "Можно пропустить.", MUTED, 13),
             chips,
             ft.Row([
@@ -273,7 +280,7 @@ class QuestScreen:
 
     def set_regulator(self, q, value: int):
         unit = game.regulator_step(q.step)
-        top = game.regulator_max(q.step, q.target)
+        top = game.regulator_max(q.step, q.target, self.engine.load())
         value = min(top, max(unit, int(round(value / unit)) * unit))
         key = q.branch.name
         changed = value != self.values[key][1]
@@ -296,7 +303,7 @@ class QuestScreen:
     def regulator(self, q, value):
         """Регулятор: −/+, крупное число и ползунок. Число «подпрыгивает» при изменении."""
         unit = game.regulator_step(q.step)
-        top = game.regulator_max(q.step, q.target)
+        top = game.regulator_max(q.step, q.target, self.engine.load())
         ok = value >= q.target
         number = text(q.step.fmt(value), SUCCESS if ok else GOLD, 34, ft.FontWeight.W_900, mono=True)
         box = ft.Container(content=number, animate_scale=ft.Animation(160, ft.AnimationCurve.EASE_OUT_BACK))
@@ -479,7 +486,7 @@ class QuestScreen:
         if self.engine.quest_done():
             self.rest_end = None
         else:
-            self.start_rest(game.REST_SECONDS)
+            self.start_rest(self.engine.rest_seconds())
         self.render()
         self.push(events)
 

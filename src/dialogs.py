@@ -3,10 +3,11 @@ import flet as ft
 
 import game
 import programs
+from common import plural
 from engine import Event
 from guides import GUIDES
 from ui import (
-    ACCENT, ACCENT_2, BG, BG_SOFT, BRANCH_ICONS, DANGER, GOLD, MUTED, RANK_COLORS, STAT_COLORS,
+    ACCENT, ACCENT_2, BG, BG_SOFT, BRANCH_ICONS, DANGER, FAINT, GOLD, MUTED, RANK_COLORS, STAT_COLORS,
     SUCCESS, TEXT, alpha, ghost_button, icon, icon_badge, kicker, pill, primary_button, text,
 )
 
@@ -19,6 +20,20 @@ class DialogsMixin:
         if event.kind == "weigh_in":
             self.events.pop(0)
             self.show_weigh_in(daily=True)
+            return
+        if event.kind == "ask_goals":
+            self.events.pop(0)
+            if self.engine.goals_known():
+                self.show_next_event()
+            else:
+                self.show_goals_dialog(first_time=True)
+            return
+        if event.kind == "ask_sex":
+            self.events.pop(0)
+            if self.engine.sex_known():
+                self.show_next_event()
+            else:
+                self.show_sex_dialog(first_time=True)
             return
         self.dialog_open = True
         heading, headline, body, color, glyph = self.describe(event)
@@ -93,7 +108,30 @@ class DialogsMixin:
             step = d["step"]
             return "НОВЫЙ НАВЫК", step.name, f"Ветка «{step.branch.title}» усилена.", ACCENT_2, BRANCH_ICONS[step.branch]
         if event.kind == "quest":
-            return "КВЕСТ ВЫПОЛНЕН", f"+{d['bonus']} XP", f"Серия: {d['streak']} дн. подряд.\nНе забудь заминку — она снимет напряжение.", SUCCESS, ft.Icons.DONE_ALL
+            body = f"Серия: {d['streak']} дн. подряд."
+            if d.get("new_tier"):
+                body += f"\nНовый бонус серии: +{d['pct']}% к опыту!"
+            elif d.get("pct"):
+                body += f"\nБонус серии: +{d['pct']}% к опыту."
+            else:
+                nxt = game.next_streak_tier(d["streak"])
+                if nxt:
+                    left = nxt[0] - d["streak"]
+                    body += f"\nЕщё {left} {plural(left, 'день', 'дня', 'дней')} — и бонус +{nxt[1]}% к опыту."
+            body += "\nНе забудь заминку — она снимет напряжение."
+            return "КВЕСТ ВЫПОЛНЕН", f"+{d['bonus']} XP", body, GOLD if d.get("new_tier") else SUCCESS, ft.Icons.DONE_ALL
+        if event.kind == "load":
+            if d["up"]:
+                body = (f"ИМТ {d['bmi']} — теперь «{d['label']}». Отличная работа!\n"
+                        "Нормы стали чуть выше: тело готово к большей нагрузке.")
+                return "ВЕС СНИЖЕН", "Нагрузка повышена", body, SUCCESS, ft.Icons.TRENDING_UP
+            body = (f"ИМТ {d['bmi']} — «{d['label']}». Нормы стали чуть легче, "
+                    "чтобы беречь суставы. Опыт за выполненную норму не уменьшается.")
+            return "НАГРУЗКА ОБНОВЛЕНА", f"−{round((1 - d['factor']) * 100)}% к нормам", body, GOLD, ft.Icons.MONITOR_WEIGHT
+        if event.kind == "goals":
+            lines = "\n".join("• " + line for line in d["lines"])
+            when = "Сегодняшний квест уже пересобран." if d["today"] else "Изменения вступят в силу с завтрашнего квеста."
+            return "ЦЕЛИ ОБНОВЛЕНЫ", d["titles"], f"{lines}\n\n{when}", ACCENT, ft.Icons.FLAG
         if event.kind == "warmup":
             return "РАЗМИНКА ЗАВЕРШЕНА", "Тело готово", "Мышцы разогреты, суставы подвижны.\nТеперь можно принять квест или начать тренировку программы.", SUCCESS, ft.Icons.SELF_IMPROVEMENT
         if event.kind == "program_session":
@@ -163,7 +201,7 @@ class DialogsMixin:
                 ], spacing=4),
             )
 
-        chips = [pill(f"Цель {step.fmt(step.goal)}{step.side_note}", color, ft.Icons.FLAG_OUTLINED)]
+        chips = [pill(f"Цель {step.fmt(game.goal_for(step, self.engine.load()))}{step.side_note}", color, ft.Icons.FLAG_OUTLINED)]
         if step.requires_all or step.requires_any:
             chips.append(pill(step.requirement_text, MUTED, ft.Icons.FITNESS_CENTER))
 
@@ -261,8 +299,9 @@ class DialogsMixin:
             self.show_next_event()
 
         def save(_):
-            self.engine.record_weight(state["kg"])
+            events = self.engine.record_weight(state["kg"])
             close()
+            self.push(events)
 
         def skip(_):
             self.engine.skip_weight()
@@ -312,6 +351,128 @@ class DialogsMixin:
             actions=actions,
         ))
         self.page.run_task(self.play_anims, [(0.1, badge, {"scale": 1, "opacity": 1})])
+
+    def show_goals_dialog(self, first_time=False):
+        """Выбор целей (несколько). Сразу показывает, что изменится в тренировке."""
+        if self.dialog_open or not self.engine.profile:
+            return
+        self.dialog_open = True
+        chosen = set(self.engine.goals())
+        tiles = ft.Column(spacing=8)
+        summary = ft.Container()
+        error = text("", DANGER, 12)
+
+        def refresh():
+            tiles.controls = [self.goal_tile(g, g in chosen, toggle(g)) for g in game.Goal]
+            summary.content = self.plan_summary(game.goal_plan(chosen)) if chosen else None
+            error.value = ""
+
+        def toggle(goal):
+            def handler(_):
+                chosen.symmetric_difference_update({goal})
+                refresh()
+                self.page.update()
+            return handler
+
+        def close():
+            self.page.pop_dialog()
+            self.dialog_open = False
+            self.render()
+            self.show_next_event()
+
+        def save(_):
+            if not chosen:
+                error.value = "Выбери хотя бы одну цель."
+                self.page.update()
+                return
+            applied_today = self.engine.set_goals(sorted(chosen, key=list(game.Goal).index))
+            self.values.clear()
+            close()
+            if not first_time:
+                self.push([Event("goals", {
+                    "today": applied_today,
+                    "titles": ", ".join(g.title for g in self.engine.goals()),
+                    "lines": self.engine.plan().summary,
+                })])
+
+        refresh()
+        actions = [ft.Row(
+            ([] if first_time else [ghost_button("Отмена", lambda _: close(), MUTED)])
+            + [primary_button("СОХРАНИТЬ", save, ft.Icons.CHECK, height=46, expand=True)],
+            spacing=8,
+        )]
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_SOFT,
+            shape=ft.RoundedRectangleBorder(radius=24, side=ft.BorderSide(width=1, color=alpha(ACCENT, 0.5))),
+            content=ft.Container(width=340, height=520, content=ft.Column([
+                kicker("[ Система ]" if first_time else "[ Цели ]"),
+                text("Чего хочешь добиться?", TEXT, 20, ft.FontWeight.W_800),
+                text("Теперь квесты подстраиваются под цель. Можно выбрать несколько." if first_time else
+                     "Можно выбрать несколько. Квест подстроится под новый выбор.", MUTED, 13),
+                tiles,
+                summary,
+                error,
+            ], spacing=12, scroll=ft.ScrollMode.AUTO)),
+            actions=actions,
+        ))
+
+    def show_sex_dialog(self, first_time=False):
+        """Выбор пола. Для старых профилей спрашивается один раз, потом меняется из «Статуса»."""
+        if self.dialog_open or not self.engine.profile:
+            return
+        self.dialog_open = True
+        current = self.engine.sex() if self.engine.sex_known() else None
+
+        def close():
+            self.page.pop_dialog()
+            self.dialog_open = False
+            self.render()
+            self.show_next_event()
+
+        def choose(sex):
+            def handler(_):
+                self.engine.set_sex(sex)
+                self.values.clear()
+                close()
+            return handler
+
+        def tile(sex, subtitle, glyph, color):
+            selected = sex is current
+            return ft.Container(
+                padding=14,
+                border_radius=ft.BorderRadius.all(16),
+                bgcolor=alpha(color, 0.12 if selected else 0.05),
+                border=ft.Border.all(1.5 if selected else 1, color if selected else alpha(color, 0.35)),
+                ink=True,
+                on_click=choose(sex),
+                content=ft.Row([
+                    icon_badge(glyph, color, 40),
+                    ft.Column([text(sex.title, TEXT, 16, ft.FontWeight.W_700), text(subtitle, MUTED, 12)],
+                              spacing=2, expand=True),
+                    icon(ft.Icons.CHECK_CIRCLE if selected else ft.Icons.CHEVRON_RIGHT_ROUNDED,
+                         color if selected else FAINT, 20),
+                ], spacing=12),
+            )
+
+        body = ("Теперь Система учитывает пол: для девушек нормы немного легче. "
+                "Выбери, чтобы подстроить квесты." if first_time else
+                "Текущие нормы пересчитаются под выбранный вариант. Прогресс по ступеням сохранится.")
+        actions = [] if first_time else [ghost_button("Отмена", lambda _: close(), MUTED)]
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_SOFT,
+            shape=ft.RoundedRectangleBorder(radius=24, side=ft.BorderSide(width=1, color=alpha(ACCENT, 0.5))),
+            content=ft.Container(width=320, content=ft.Column([
+                kicker("[ Система ]" if first_time else "[ Пол ]"),
+                text("Укажи пол", TEXT, 20, ft.FontWeight.W_800),
+                text(body, MUTED, 13),
+                tile(game.Sex.MALE, "Стандартные нормы", ft.Icons.MALE, ACCENT),
+                tile(game.Sex.FEMALE, "Отжимания и подтягивания ~на треть легче, ноги и кор — чуть легче",
+                     ft.Icons.FEMALE, ACCENT_2),
+            ], spacing=12, tight=True)),
+            actions=actions,
+        ))
 
     def confirm(self, title, body, yes_label, on_yes, color=DANGER):
         """Окно подтверждения для необратимых действий."""
