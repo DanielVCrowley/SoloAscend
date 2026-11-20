@@ -13,6 +13,28 @@ from ui import (
 
 
 class StatusScreen:
+    def settings_card(self):
+        e = self.engine
+
+        def toggle(ev):
+            e.set_autoplay_video(ev.control.value)
+            self.render()
+
+        note = ("Видео упражнения само запускается в тренировке без звука — звук включается касанием. "
+                "Расходует мобильный трафик." if self.can_embed_video() else
+                "На компьютере встроенный плеер недоступен — видео открываются в YouTube.")
+        return card([
+            kicker("Настройки", MUTED),
+            ft.Row([
+                icon(ft.Icons.SMART_DISPLAY_OUTLINED, ACCENT, 22),
+                ft.Column([
+                    text("Автовоспроизведение видео", TEXT, 14, ft.FontWeight.W_600),
+                    text(note, MUTED, 11),
+                ], spacing=2, expand=True),
+                ft.Switch(value=e.autoplay_video(), active_color=ACCENT, on_change=toggle),
+            ], spacing=12),
+        ], glow=0.04)
+
     def goals_card(self):
         e = self.engine
         goals = e.goals()
@@ -283,4 +305,5 @@ class StatusScreen:
                     wrap=True, spacing=6, run_spacing=6,
                 ),
             ], glow=0.06)),
+            r(self.settings_card()),
         ]

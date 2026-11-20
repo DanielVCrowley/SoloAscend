@@ -251,6 +251,17 @@ class Engine:
                 quest_stage=quest_stage,
             )
 
+    # ---------- настройки ----------
+
+    def autoplay_video(self) -> bool:
+        """Автовоспроизведение видео в тренировке (по умолчанию включено)."""
+        return bool(self.profile.get("autoplay_video", True)) if self.profile else True
+
+    def set_autoplay_video(self, on: bool):
+        if self.profile:
+            self.profile["autoplay_video"] = bool(on)
+            self._save()
+
     # ---------- цели ----------
 
     def goals(self) -> list:

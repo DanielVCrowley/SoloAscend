@@ -4,6 +4,7 @@ import time
 import flet as ft
 
 import game
+import videos
 from common import fmt_seconds, seconds_left
 from engine import Event
 from ui import (
@@ -99,8 +100,18 @@ class RoutineScreen:
                 ft.Row([pill(label, color, glyph)], alignment=ft.MainAxisAlignment.CENTER),
                 text(move.name, TEXT, 22, ft.FontWeight.W_800, align=ft.TextAlign.CENTER),
                 text(move.tip, MUTED, 13, align=ft.TextAlign.CENTER),
+                *self.move_video(move, color),
             ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         )
+
+    def move_video(self, move, color):
+        """Видео упражнения разминки/заминки: сам играет без звука, если включено автовоспроизведение."""
+        video = videos.for_move(move.name)
+        if not video:
+            return []
+        if self.autoplay_video():
+            return [self.video_player(video, color, height=180)]
+        return [self.video_button(video, color, "Смотреть видео · таймер на паузе")]
 
     def routine_panel(self):
         r = self.routine
@@ -167,7 +178,10 @@ class RoutineScreen:
         title.value = f"[ {'Разминка' if r['kind'] == 'warmup' else 'Заминка'} · {r['index'] + 1}/{len(moves)} ]"
         for i, segment in enumerate(bars.controls):
             segment.bgcolor = color if i <= r["index"] else LINE
+        self.pending_players = []
         switcher.content = self.move_view(moves[r["index"]], moves[r["index"]].seconds, False)
         upcoming.value = self.upcoming_text(moves, r["index"])
         self.page.update()
+        if self.pending_players:
+            self.page.run_task(self.flush_players, list(self.pending_players), self.generation)
         return True

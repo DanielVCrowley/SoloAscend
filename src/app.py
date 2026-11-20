@@ -61,6 +61,7 @@ class AscendApp(
         self.ptimer = None  # таймер удержания в тренировке программы: (упражнение, секунды, конец)
         self.pflash = None  # только что отмеченный подход программы: (упражнение, номер подхода)
         self.weigh_open = False
+        self.pending_players: list = []  # встроенные плееры, ждущие загрузки
 
     def start(self):
         try:
@@ -154,6 +155,7 @@ class AscendApp(
         self.live = {}
         self.pending = []
         self.anims = []
+        self.pending_players = []
         if not self.engine.profile:
             self.page.navigation_bar = None
             body = self.onboarding(animate)
@@ -189,6 +191,8 @@ class AscendApp(
             self.page.run_task(self.play_reveal, list(self.pending), self.generation)
         if self.anims:
             self.page.run_task(self.play_anims, list(self.anims), self.generation)
+        if self.pending_players:
+            self.page.run_task(self.flush_players, list(self.pending_players), self.generation)
         if "ring_tween" in self.live:
             self.page.run_task(self.tween_ring, *self.live["ring_tween"], self.generation)
         self.pflash = None

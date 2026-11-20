@@ -1,13 +1,21 @@
 """Диалоги: события Системы и окно «Как выполнять»."""
+import asyncio
+
 import flet as ft
+
+try:  # встроенный плеер — расширение flet-webview (на телефоне)
+    from flet_webview import WebView
+except ImportError:  # без расширения остаются превью с переходом в YouTube
+    WebView = None
 
 import game
 import programs
+import videos
 from common import plural
 from engine import Event
 from guides import GUIDES
 from ui import (
-    ACCENT, ACCENT_2, BG, BG_SOFT, BRANCH_ICONS, DANGER, FAINT, GOLD, MUTED, RANK_COLORS, STAT_COLORS,
+    ACCENT, ACCENT_2, BG, BG_SOFT, BRANCH_ICONS, CARD, DANGER, FAINT, GOLD, MUTED, RANK_COLORS, STAT_COLORS,
     SUCCESS, TEXT, alpha, ghost_button, icon, icon_badge, kicker, pill, primary_button, text,
 )
 
@@ -205,12 +213,14 @@ class DialogsMixin:
         if step.requires_all or step.requires_any:
             chips.append(pill(step.requirement_text, MUTED, ft.Icons.FITNESS_CENTER))
 
+        video = videos.for_step(step.id)
         blocks = [
             ft.Row([
                 icon_badge(BRANCH_ICONS[step.branch], color, 46),
                 ft.Column([kicker(step.branch.title, color), text(step.name, TEXT, 19, ft.FontWeight.W_800)],
                           spacing=2, expand=True),
             ], spacing=12),
+            *([self.video_card(video, color)] if video else []),
             ft.Row(chips, wrap=True, spacing=6, run_spacing=6),
             section("Работают мышцы", ft.Icons.ACCESSIBILITY_NEW, MUTED, [text(guide.muscles, TEXT, 13)]),
             section("Техника", ft.Icons.FORMAT_LIST_NUMBERED, color,
@@ -502,6 +512,143 @@ class DialogsMixin:
                 primary_button(yes_label, yes, height=44, expand=True, colors=[color, alpha(color, 0.7)]),
             ], spacing=8)],
         ))
+
+    # ---------- видео ----------
+
+    def video_card(self, video, color=ACCENT, width=316):
+        """Превью ролика с кнопкой ▶, названием и каналом. По нажатию открывается YouTube."""
+        height = round(width * 9 / 16)
+        placeholder = ft.Container(
+            width=width, height=height, alignment=ft.Alignment.CENTER, bgcolor=CARD,
+            content=ft.Column([
+                icon(ft.Icons.VIDEOCAM_OFF_OUTLINED, FAINT, 28),
+                text("Превью не загрузилось — нужен интернет", FAINT, 11, align=ft.TextAlign.CENTER),
+            ], spacing=6, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        )
+        play = ft.Container(
+            width=58, height=58, alignment=ft.Alignment.CENTER,
+            border_radius=ft.BorderRadius.all(29),
+            bgcolor=alpha(BG, 0.72),
+            border=ft.Border.all(1.5, color),
+            shadow=ft.BoxShadow(blur_radius=24, color=alpha(color, 0.6)),
+            content=icon(ft.Icons.PLAY_ARROW_ROUNDED, color, 34),
+        )
+        layers = [
+            ft.Image(src=video.thumb, width=width, height=height, fit=ft.BoxFit.COVER,
+                     gapless_playback=True, error_content=placeholder),
+            ft.Container(width=width, height=height, gradient=ft.LinearGradient(
+                begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                colors=[alpha(BG, 0.0), alpha(BG, 0.55)],
+            )),
+            ft.Container(width=width, height=height, alignment=ft.Alignment.CENTER, content=self.pulse(play, 1.08)),
+        ]
+        if video.length:
+            layers.append(ft.Container(
+                right=8, bottom=8, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                border_radius=ft.BorderRadius.all(6), bgcolor=alpha(BG, 0.8),
+                content=text(video.length, TEXT, 11, ft.FontWeight.W_700, mono=True),
+            ))
+        return ft.Container(
+            ink=True,
+            on_click=lambda _: self.open_video(video),
+            border_radius=ft.BorderRadius.all(16),
+            bgcolor=alpha(CARD, 0.9),
+            border=ft.Border.all(1, alpha(color, 0.35)),
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            content=ft.Column([
+                ft.Stack(layers, width=width, height=height),
+                ft.Container(padding=ft.Padding.only(left=12, right=12, top=8, bottom=10), content=ft.Column([
+                    ft.Text(video.title, color=TEXT, size=13, weight=ft.FontWeight.W_600,
+                            max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Row([
+                        icon(ft.Icons.SMART_DISPLAY, DANGER, 16),
+                        ft.Container(content=text(f"YouTube · {video.channel}", MUTED, 11), expand=True),
+                        icon(ft.Icons.OPEN_IN_NEW, FAINT, 14),
+                    ], spacing=6),
+                ], spacing=4)),
+            ], spacing=0),
+        )
+
+    def can_embed_video(self) -> bool:
+        """Встроенный плеер работает только на телефоне (WebView на Windows не поддерживается)."""
+        return WebView is not None and \
+            getattr(self.page, "platform", None) in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS)
+
+    def autoplay_video(self) -> bool:
+        return self.can_embed_video() and self.engine.autoplay_video()
+
+    def video_player(self, video, color=ACCENT, height=196):
+        """Встроенный плеер YouTube: сам стартует без звука и крутится по кругу.
+        Где встраивание недоступно — карточка-превью с переходом в YouTube."""
+        if not self.can_embed_video():
+            return self.video_card(video, color)
+        view = WebView(url="about:blank", expand=True, bgcolor=BG, prevent_links=videos.BLOCKED_LINKS)
+        player = {"view": view, "html": video.player_html(), "loaded": False}
+
+        async def on_ended(e):
+            # about:blank загрузился — теперь кладём свою страницу (иначе её перезапишет пустая)
+            await self.load_player(player)
+
+        view.on_page_ended = on_ended
+        self.pending_players.append(player)
+        box = ft.Container(
+            expand=True,
+            border_radius=ft.BorderRadius.all(16),
+            bgcolor=alpha(CARD, 0.9),
+            border=ft.Border.all(1, alpha(color, 0.35)),
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            content=ft.Column([
+                ft.Container(height=height, bgcolor="#000000", content=view),
+                ft.Container(padding=ft.Padding.only(left=12, right=4, top=6, bottom=6), content=ft.Row([
+                    icon(ft.Icons.SMART_DISPLAY, DANGER, 16),
+                    ft.Column([
+                        ft.Text(video.title, color=TEXT, size=12, weight=ft.FontWeight.W_600,
+                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        text(f"{video.channel} · звук — коснись видео", MUTED, 10),
+                    ], spacing=0, expand=True),
+                    ft.IconButton(icon=ft.Icons.OPEN_IN_NEW, icon_color=MUTED, icon_size=18,
+                                  tooltip="Открыть в YouTube", on_click=lambda _: self.open_video(video)),
+                ], spacing=8)),
+            ], spacing=0),
+        )
+        return ft.Row([box])  # строка растягивает плеер на всю ширину карточки
+
+    async def load_player(self, player):
+        if player["loaded"]:
+            return
+        player["loaded"] = True
+        try:
+            await player["view"].load_html(player["html"], base_url=videos.PLAYER_ORIGIN + "/")
+        except Exception:
+            player["loaded"] = False
+
+    async def flush_players(self, players, generation=None):
+        """Подстраховка: если событие загрузки about:blank не пришло — грузим плеер сами."""
+        await asyncio.sleep(1.2)
+        for player in players:
+            if generation is not None and generation != self.generation:
+                return
+            await self.load_player(player)
+
+    def video_button(self, video, color=ACCENT, label="Видео"):
+        return ghost_button(label, lambda _: self.open_video(video), color, ft.Icons.SMART_DISPLAY_OUTLINED)
+
+    def open_video(self, video):
+        """Открывает ролик в YouTube. Таймер разминки/заминки ставится на паузу, чтобы не убежал."""
+        if self.routine and self.routine.get("end"):
+            self.toggle_pause()
+        self.page.run_task(self.launch_url, video.url)
+
+    async def launch_url(self, url):
+        launcher = getattr(self, "launcher", None) or ft.UrlLauncher()
+        self.launcher = launcher
+        try:
+            await launcher.launch_url(url, mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+        except Exception:
+            try:
+                await launcher.launch_url(url)
+            except Exception:
+                pass
 
     def tappable(self, step, control):
         return ft.Container(

@@ -1,1 +1,2 @@
 flet[all]==1.1.2
+flet-webview==1.1.2

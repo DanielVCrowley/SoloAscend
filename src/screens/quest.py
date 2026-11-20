@@ -4,6 +4,7 @@ import time
 import flet as ft
 
 import game
+import videos
 from common import fmt_seconds, plural, seconds_left
 from game import Branch
 from ui import (
@@ -55,7 +56,9 @@ class QuestScreen:
         if self.rest_end and not self.hold:
             controls.append(self.rest_card(slide=bool(self.flash)))
 
-        controls += [r(self.quest_card(q)) for q in items]
+        # текущее упражнение — первое невыполненное: у него видео запускается само
+        current = next((q.branch for q in items if not q.completed), None)
+        controls += [r(self.quest_card(q, q.branch is current)) for q in items]
         return controls
 
     def streak_pill(self):
@@ -343,7 +346,7 @@ class QuestScreen:
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ], spacing=2)
 
-    def quest_card(self, q):
+    def quest_card(self, q, active=False):
         is_reps = q.step.is_reps
         busy = self.hold is not None
         holding = busy and self.hold[0] is q.branch
@@ -401,7 +404,11 @@ class QuestScreen:
             *trailing,
         ], spacing=10)
 
+        video = videos.for_step(q.step.id)
+        autoplay = active and not q.completed and video is not None and self.autoplay_video()
         controls = [header, ft.Row(cells, spacing=8)]
+        if autoplay:
+            controls.insert(1, self.video_player(video, ACCENT))
         if q.completed:
             done_row = ft.Row([icon(ft.Icons.CHECK_CIRCLE, SUCCESS, 18), text("Выполнено", SUCCESS, 14, ft.FontWeight.W_700)], spacing=6)
             controls.append(self.pop_in(done_row, 0.35, start=0.5) if flash else done_row)
@@ -430,7 +437,10 @@ class QuestScreen:
                     icon(ft.Icons.LIGHTBULB_OUTLINE, FAINT, 16),
                     ft.Container(content=text(q.step.tip, MUTED, 12), expand=True),
                 ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START))
-            controls.append(ft.Row([self.guide_link(q.step)], alignment=ft.MainAxisAlignment.END))
+            controls.append(ft.Row(
+                ([self.video_button(video)] if video and not autoplay else []) + [self.guide_link(q.step)],
+                alignment=ft.MainAxisAlignment.END, spacing=0,
+            ))
             panel = ft.Container(
                 padding=12,
                 border_radius=ft.BorderRadius.all(14),

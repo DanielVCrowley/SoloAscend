@@ -6,6 +6,7 @@ import flet as ft
 
 import game
 import programs as prog_data
+import videos
 from common import fmt_seconds, seconds_left
 from guides import GUIDES
 from ui import (
@@ -226,7 +227,9 @@ class ProgramsScreen:
         controls = [r(header)]
         if self.rest_end and not self.ptimer:
             controls.append(self.rest_card(slide=bool(self.pflash)))
-        controls += [r(self.drill_card(i, d, marks[i], color)) for i, d in enumerate(drills)]
+        # текущее упражнение — первое незавершённое: у него видео запускается само
+        current = next((i for i, d in enumerate(drills) if marks[i] < d.sets), None)
+        controls += [r(self.drill_card(i, d, marks[i], color, i == current)) for i, d in enumerate(drills)]
 
         if complete:
             controls.append(self.pulse(self.pop_in(primary_button(
@@ -237,7 +240,7 @@ class ProgramsScreen:
             controls.append(primary_button("Выполни все подходы", None, ft.Icons.CHECKLIST, disabled=True))
         return controls
 
-    def drill_card(self, index, drill, marked, color):
+    def drill_card(self, index, drill, marked, color, current_drill=False):
         complete = marked >= drill.sets
         flash = self.pflash if self.pflash and self.pflash[0] == index else None
         timing = self.ptimer is not None and self.ptimer[0] == index
@@ -272,6 +275,10 @@ class ProgramsScreen:
             ], spacing=12),
             ft.Row(cells, spacing=6),
         ]
+        video = videos.for_drill(drill)
+        autoplay = current_drill and not complete and video is not None and self.autoplay_video()
+        if autoplay:
+            controls.insert(1, self.video_player(video, color))
 
         if complete:
             done_row = ft.Row([icon(ft.Icons.CHECK_CIRCLE, SUCCESS, 18), text("Выполнено", SUCCESS, 14, ft.FontWeight.W_700)], spacing=6)
@@ -281,9 +288,13 @@ class ProgramsScreen:
                 icon(ft.Icons.LIGHTBULB_OUTLINE, FAINT, 16),
                 ft.Container(content=text(drill.tip, MUTED, 12), expand=True),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START))
+            links = []
+            if video and not autoplay:
+                links.append(self.video_button(video, color))
             if drill.guide in GUIDES:
-                controls.append(ft.Row([self.guide_link(game.STEP_BY_ID[drill.guide], color)],
-                                       alignment=ft.MainAxisAlignment.END))
+                links.append(self.guide_link(game.STEP_BY_ID[drill.guide], color))
+            if links:
+                controls.append(ft.Row(links, alignment=ft.MainAxisAlignment.END, spacing=0))
             if timing:
                 _, seconds, end = self.ptimer
                 left = seconds_left(end)
