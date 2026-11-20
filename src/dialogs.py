@@ -16,7 +16,7 @@ from engine import Event
 from guides import GUIDES
 from ui import (
     ACCENT, ACCENT_2, BG, BG_SOFT, BRANCH_ICONS, CARD, DANGER, FAINT, GOLD, MUTED, RANK_COLORS, STAT_COLORS,
-    SUCCESS, TEXT, alpha, ghost_button, icon, icon_badge, kicker, pill, primary_button, text,
+    STAT_ICONS, SUCCESS, TEXT, alpha, ghost_button, icon, icon_badge, kicker, pill, primary_button, text,
 )
 
 
@@ -42,6 +42,17 @@ class DialogsMixin:
                 self.show_next_event()
             else:
                 self.show_sex_dialog(first_time=True)
+            return
+        if event.kind in ("level", "stat_points"):
+            self.events.pop(0)
+            self.show_level_dialog(event if event.kind == "level" else None)
+            return
+        if event.kind == "focus":
+            self.events.pop(0)
+            if self.engine.focus_pending():
+                self.show_focus_dialog(event)
+            else:
+                self.show_next_event()
             return
         self.dialog_open = True
         heading, headline, body, color, glyph = self.describe(event)
@@ -136,6 +147,12 @@ class DialogsMixin:
             body = (f"ИМТ {d['bmi']} — «{d['label']}». Нормы стали чуть легче, "
                     "чтобы беречь суставы. Опыт за выполненную норму не уменьшается.")
             return "НАГРУЗКА ОБНОВЛЕНА", f"−{round((1 - d['factor']) * 100)}% к нормам", body, GOLD, ft.Icons.MONITOR_WEIGHT
+        if event.kind == "focus_set":
+            lines = "\n".join("• " + line for line in d["lines"])
+            until = f"до ранга {d['until']}" if d["until"] else "на высшем ранге"
+            when = "Сегодняшний квест уже пересобран." if d["today"] else "План сместится с завтрашнего квеста."
+            return ("НАПРАВЛЕНИЕ ВЫБРАНО", d["stat"].value, f"Действует {until}.\n{lines}\n\n{when}",
+                    STAT_COLORS[d["stat"]], STAT_ICONS[d["stat"]])
         if event.kind == "goals":
             lines = "\n".join("• " + line for line in d["lines"])
             when = "Сегодняшний квест уже пересобран." if d["today"] else "Изменения вступят в силу с завтрашнего квеста."
@@ -361,6 +378,174 @@ class DialogsMixin:
             actions=actions,
         ))
         self.page.run_task(self.play_anims, [(0.1, badge, {"scale": 1, "opacity": 1})])
+
+    # ---------- повышение уровня и ранга ----------
+
+    def choice_dialog(self, color, badge_content, heading, headline, body, tiles, extra=None):
+        """Окно-выбор без кнопки закрытия: значок «выпрыгивает», строки выезжают по очереди."""
+        badge = ft.Container(
+            content=badge_content,
+            width=84, height=84,
+            alignment=ft.Alignment.CENTER,
+            border_radius=ft.BorderRadius.all(42),
+            bgcolor=alpha(color, 0.14),
+            border=ft.Border.all(1.5, alpha(color, 0.6)),
+            shadow=ft.BoxShadow(blur_radius=34, color=alpha(color, 0.5)),
+            scale=0.2, opacity=0, rotate=ft.Rotate(-0.8),
+            animate_scale=ft.Animation(900, ft.AnimationCurve.ELASTIC_OUT),
+            animate_rotation=ft.Animation(700, ft.AnimationCurve.EASE_OUT_BACK),
+            animate_opacity=ft.Animation(200),
+        )
+
+        def rise(control):
+            return ft.Container(
+                content=control, opacity=0, offset=ft.Offset(0, 0.35),
+                animate_opacity=ft.Animation(380, ft.AnimationCurve.EASE_OUT),
+                animate_offset=ft.Animation(520, ft.AnimationCurve.EASE_OUT_CUBIC),
+            )
+
+        lines = [rise(kicker(f"[ {heading} ]", color)),
+                 rise(text(headline, TEXT, 24, ft.FontWeight.W_900, align=ft.TextAlign.CENTER)),
+                 rise(text(body, MUTED, 13, align=ft.TextAlign.CENTER))]
+        if extra:
+            lines.append(rise(extra))
+        rows = [rise(t) for t in tiles]
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_SOFT,
+            shape=ft.RoundedRectangleBorder(radius=24, side=ft.BorderSide(width=1, color=alpha(color, 0.55))),
+            content=ft.Container(width=330, content=ft.Column(
+                [badge, *lines, ft.Container(height=2), *rows],
+                spacing=10, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            )),
+        ))
+        steps = [(0.1, badge, {"scale": 1, "opacity": 1, "rotate": ft.Rotate(0)})]
+        steps += [(0.28 + i * 0.07, w, {"opacity": 1, "offset": ft.Offset(0, 0)}) for i, w in enumerate(lines + rows)]
+        self.page.run_task(self.play_anims, steps)
+
+    def choice_tile(self, glyph, color, title, subtitle, on_pick, trailing=None):
+        tile = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+            border_radius=ft.BorderRadius.all(16),
+            bgcolor=alpha(color, 0.07),
+            border=ft.Border.all(1, alpha(color, 0.4)),
+            ink=True,
+            animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT),
+            animate_scale=ft.Animation(260, ft.AnimationCurve.EASE_OUT_BACK),
+            content=ft.Row([
+                icon_badge(glyph, color, 40),
+                ft.Column([text(title, TEXT, 15, ft.FontWeight.W_700), text(subtitle, MUTED, 12)],
+                          spacing=1, expand=True),
+                trailing or icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, color, 22),
+            ], spacing=12),
+        )
+
+        def pick(_):
+            if getattr(tile, "_picked", False):
+                return
+            tile._picked = True
+            tile.bgcolor = alpha(color, 0.3)
+            tile.border = ft.Border.all(2, color)
+            tile.scale = 1.05
+            self.page.update()
+            on_pick()
+
+        tile.on_click = pick
+        return tile
+
+    def close_choice(self, then=None):
+        """Закрывает окно выбора чуть позже — чтобы успела проиграть подсветка выбранного варианта."""
+        async def later():
+            await asyncio.sleep(0.45)
+            self.page.pop_dialog()
+            self.dialog_open = False
+            self.render()
+            if then:
+                then()
+            self.show_next_event()
+        self.page.run_task(later)
+
+    def show_level_dialog(self, event=None):
+        """Новый уровень: игрок выбирает, какую характеристику поднять на 1."""
+        e = self.engine
+        rank_up = bool(event and event.data.get("rank_up"))
+        if self.dialog_open:
+            return
+        if e.unspent_points() <= 0:
+            if rank_up and e.focus_pending():
+                self.show_focus_dialog(event)
+            else:
+                self.show_next_event()
+            return
+        self.dialog_open = True
+        level = e.level().level
+        points = e.unspent_points()
+        stats = e.stats()
+
+        def picked(stat):
+            def handler():
+                e.spend_point(stat)
+
+                def after():
+                    if e.unspent_points() > 0:
+                        self.events.insert(0, event or Event("stat_points", {}))
+                    elif rank_up:
+                        self.events.insert(0, Event("focus", dict(event.data)))
+                self.close_choice(after)
+            return handler
+
+        tiles = []
+        for stat in game.Stat:
+            color = STAT_COLORS[stat]
+            value = stats[stat]
+            tiles.append(self.choice_tile(
+                STAT_ICONS[stat], color, stat.value, f"{value} → {value + 1}", picked(stat),
+                trailing=pill("+1", color),
+            ))
+        body = "Выбери, какую характеристику улучшить на 1."
+        if points > 1:
+            body += f"\nОчков к распределению: {points}"
+        self.choice_dialog(
+            GOLD, text(str(level), GOLD, 34, ft.FontWeight.W_900, mono=True),
+            "Уровень повышен" if event else "Очки характеристик",
+            f"Уровень {level}", body, tiles,
+        )
+
+    def show_focus_dialog(self, event=None):
+        """Новый ранг: игрок выбирает направление тренировок до следующего ранга."""
+        e = self.engine
+        if self.dialog_open or not e.focus_pending():
+            return
+        self.dialog_open = True
+        rank = e.rank()
+        color = RANK_COLORS[rank]
+        nxt = game.next_rank(rank)
+        unlocked = (event.data.get("unlocked") if event else None) or []
+
+        def picked(stat):
+            def handler():
+                today = e.choose_focus(stat)
+                plan = e.plan()
+                self.close_choice(lambda: self.events.insert(0, Event("focus_set", {
+                    "stat": stat, "today": today, "lines": plan.summary,
+                    "until": nxt.value if nxt else None,
+                })))
+            return handler
+
+        tiles = [
+            self.choice_tile(STAT_ICONS[stat], STAT_COLORS[stat], stat.value, game.FOCUS[stat]["hint"], picked(stat))
+            for stat in game.Stat
+        ]
+        until = f"до ранга {nxt.value}" if nxt else "на высшем ранге"
+        extra = None
+        if unlocked:
+            extra = pill("В квест добавлены: " + ", ".join(b.title.lower() for b in unlocked), SUCCESS, ft.Icons.LOCK_OPEN)
+        self.choice_dialog(
+            color, text(rank.value, color, 40, ft.FontWeight.W_900),
+            "Новый ранг", f"Ранг {rank.value}",
+            f"Выбери направление тренировок {until}. План немного сместится в его пользу.",
+            tiles, extra,
+        )
 
     def show_goals_dialog(self, first_time=False):
         """Выбор целей (несколько). Сразу показывает, что изменится в тренировке."""

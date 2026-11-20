@@ -8,11 +8,50 @@ from programs import PROGRAM_BY_ID, TOTAL_SESSIONS
 from screens.onboarding import GOAL_COLORS, GOAL_ICONS
 from ui import (
     ACCENT, CARD, DANGER, FAINT, GOLD, LINE, MUTED, RANK_COLORS, STAT_COLORS, STAT_ICONS, SUCCESS, TEXT,
-    alpha, bar, card, ghost_button, icon, icon_badge, kicker, page_header, pill, ring, stat_row, text,
+    alpha, bar, card, ghost_button, icon, icon_badge, kicker, page_header, pill, primary_button, ring, stat_row,
+    text,
 )
 
 
 class StatusScreen:
+    def points_banner(self):
+        """Нераспределённые очки характеристик — «дышащая» плашка с кнопкой."""
+        n = self.engine.unspent_points()
+        return self.pulse(card([ft.Row([
+            icon_badge(ft.Icons.AUTO_AWESOME, GOLD, 40),
+            ft.Column([
+                text(f"Очков характеристик: {n}", TEXT, 15, ft.FontWeight.W_700),
+                text("Получены за новый уровень — распредели их.", MUTED, 12),
+            ], spacing=1, expand=True),
+            primary_button("Распределить", lambda _: self.show_level_dialog(), height=40,
+                           colors=[GOLD, alpha(GOLD, 0.7)]),
+        ], spacing=12)], GOLD, padding=14, glow=0.22), 1.02)
+
+    def focus_card(self):
+        """Направление тренировок до следующего ранга (или кнопка выбора, если ещё не выбрано)."""
+        e = self.engine
+        focus = e.focus()
+        nxt = game.next_rank(e.rank())
+        until = f"до ранга {nxt.value}" if nxt else "на высшем ранге"
+        if not focus:
+            return card([ft.Row([
+                icon_badge(ft.Icons.EXPLORE, ACCENT, 40),
+                ft.Column([
+                    text("Новый ранг — выбери направление", TEXT, 14, ft.FontWeight.W_700),
+                    text(f"План сместится в его пользу {until}.", MUTED, 12),
+                ], spacing=1, expand=True),
+                primary_button("Выбрать", lambda _: self.show_focus_dialog(), height=40),
+            ], spacing=12)], ACCENT, padding=14, glow=0.2)
+        color = STAT_COLORS[focus]
+        return card([ft.Row([
+            icon_badge(STAT_ICONS[focus], color, 40),
+            ft.Column([
+                kicker(f"Направление · {until}", color),
+                text(focus.value, TEXT, 16, ft.FontWeight.W_800),
+                text(game.FOCUS[focus]["hint"], MUTED, 12),
+            ], spacing=1, expand=True),
+        ], spacing=12)], color, padding=14, glow=0.12)
+
     def settings_card(self):
         e = self.engine
 
@@ -45,7 +84,6 @@ class StatusScreen:
                 ghost_button("Изменить", lambda _: self.show_goals_dialog(), ACCENT, ft.Icons.EDIT_OUTLINED),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Row(chips, wrap=True, spacing=6, run_spacing=6),
-            *([self.plan_summary(e.plan())] if goals else []),
         ], ACCENT, glow=0.08, spacing=10)
 
     def streak_ladder(self):
@@ -87,8 +125,6 @@ class StatusScreen:
             ft.Row(chips, spacing=6),
             progress,
             text(status, MUTED, 12),
-            text("Действует на весь опыт: подходы, награду за квест, заминку и программы. "
-                 "Пропуск дня обнуляет серию.", FAINT, 11),
         ]
 
     def weight_card(self):
@@ -150,7 +186,25 @@ class StatusScreen:
                 ft.Container(content=text(f"{kg:.1f} кг", TEXT, 13, ft.FontWeight.W_600, mono=True),
                              width=70, alignment=ft.Alignment.CENTER_RIGHT),
             ], spacing=8))
-        rows += [ft.Divider(color=LINE, height=1), kicker("Последние замеры", MUTED), *table]
+        def toggle_log(_):
+            self.show_weight_log = not self.show_weight_log
+            self.render()
+
+        opened = self.show_weight_log
+        rows.append(ft.Container(
+            ink=True,
+            border_radius=ft.BorderRadius.all(10),
+            padding=ft.Padding.symmetric(vertical=6),
+            on_click=toggle_log,
+            content=ft.Row([
+                kicker("Последние замеры", MUTED),
+                ft.Container(content=icon(ft.Icons.EXPAND_MORE, MUTED, 20),
+                             rotate=ft.Rotate(3.14159 if opened else 0),
+                             animate_rotation=ft.Animation(250, ft.AnimationCurve.EASE_OUT)),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ))
+        if opened:
+            rows.append(self.slide_in(ft.Column(table, spacing=10), 0.05, dy=-0.15))
         return card(rows, ACCENT, glow=0.1, spacing=10)
 
     @staticmethod
@@ -202,95 +256,122 @@ class StatusScreen:
         lvl = e.level()
         rank = e.rank()
         rank_color = RANK_COLORS[rank]
-        meters = p["height_cm"] / 100
         equipment = e.equipment()
         done = e.today_done()
 
-        badge, _ = ring(lvl.fraction, 104, rank_color, ft.Column([
+        def counted(control, value, fmt, delay=0.25):
+            return self.count_up(control, value, fmt, delay=delay) if animate else control
+
+        badge, level_ring = ring(lvl.fraction, 104, rank_color, ft.Column([
             text(rank.value, rank_color, 40, ft.FontWeight.W_900),
             text("РАНГ", MUTED, 10, ft.FontWeight.W_700, mono=True, spacing=2),
         ], spacing=0, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER), stroke=7)
+        if animate:
+            self.count_up(level_ring, lvl.fraction, None, delay=0.3, ms=1100)
+        # вокруг ранга вращается светящаяся «комета», под ней — маска фона карточки
+        emblem = ft.Stack([
+            self.spinner(128, rank_color),
+            ft.Container(width=116, height=116, left=6, top=6, border_radius=58, bgcolor=CARD),
+            ft.Container(content=badge, left=12, top=12),
+        ], width=128, height=128)
+
+        level_text = counted(text(f"Уровень {lvl.level}", rank_color, 16, ft.FontWeight.W_600),
+                             lvl.level, lambda v: f"Уровень {max(1, round(v))}")
+        xp_text = counted(text(f"{lvl.current} / {lvl.needed} XP", MUTED, 12, mono=True),
+                          lvl.current, lambda v: f"{round(v)} / {lvl.needed} XP", delay=0.35)
+        level_bar = bar(lvl.fraction, rank_color, 6)
+        if animate:
+            self.count_up(level_bar, lvl.fraction, None, delay=0.35, ms=1100)
 
         hero = card([
             ft.Row([
-                ft.Container(content=badge, shadow=ft.BoxShadow(blur_radius=40, spread_radius=-12, color=alpha(rank_color, 0.6)), border_radius=52),
+                ft.Container(content=emblem, shadow=ft.BoxShadow(blur_radius=40, spread_radius=-14,
+                                                                  color=alpha(rank_color, 0.6)), border_radius=64),
                 ft.Column([
                     text(p["name"], TEXT, 24, ft.FontWeight.W_800),
-                    text(f"Уровень {lvl.level}", rank_color, 16, ft.FontWeight.W_600),
-                    text(f"{lvl.current} / {lvl.needed} XP до следующего", MUTED, 12, mono=True),
+                    level_text,
+                    xp_text,
                     ft.Row([
                         pill(f"{e.active_streak()} дн." + (f" · +{e.streak_bonus()}%" if e.streak_bonus() else ""),
                              GOLD, ft.Icons.LOCAL_FIRE_DEPARTMENT),
                         pill("Квест ✓" if done else "Квест ✗", SUCCESS if done else DANGER),
                     ], spacing=6, wrap=True),
                 ], spacing=4, expand=True),
-            ], spacing=18),
-            bar(lvl.fraction, rank_color, 6),
+            ], spacing=16),
+            level_bar,
         ], rank_color, glow=0.2)
 
         tiles = []
-        for stat, value in e.stats().items():
+        bonus = e.stat_points()
+        focus = e.focus()
+        for i, (stat, value) in enumerate(e.stats().items()):
             color = STAT_COLORS[stat]
+            number = counted(text(value, TEXT, 26, ft.FontWeight.W_800, mono=True),
+                             value, lambda v: str(round(v)), delay=0.35 + i * 0.12)
+            caption = [text(stat.value, MUTED, 12)]
+            if bonus[stat]:
+                caption.append(text(f"+{bonus[stat]} очк.", color, 10, ft.FontWeight.W_700, mono=True))
             tiles.append(ft.Container(col=4, content=ft.Container(
                 padding=14,
                 border_radius=ft.BorderRadius.all(16),
-                bgcolor=alpha(CARD, 0.9),
-                border=ft.Border.all(1, alpha(color, 0.25)),
-                content=ft.Column([
-                    icon_badge(STAT_ICONS[stat], color, 34),
-                    text(value, TEXT, 26, ft.FontWeight.W_800, mono=True),
-                    text(stat.value, MUTED, 12),
-                ], spacing=6),
+                bgcolor=alpha(color, 0.08) if stat is focus else alpha(CARD, 0.9),
+                border=ft.Border.all(1.5 if stat is focus else 1, alpha(color, 0.7 if stat is focus else 0.25)),
+                content=ft.Column([icon_badge(STAT_ICONS[stat], color, 34), number, *caption], spacing=4),
             )))
 
         skills_card = []
         done_programs = [PROGRAM_BY_ID[i] for i in e.programs_done() if i in PROGRAM_BY_ID]
         active = e.program()
         if done_programs or active:
-            rows = [kicker("Освоенные навыки", GOLD)]
+            rows = [kicker("Навыки", GOLD)]
             if done_programs:
-                rows.append(ft.Row([pill(p.name, GOLD, ft.Icons.MILITARY_TECH) for p in done_programs],
+                rows.append(ft.Row([pill(pr.name, GOLD, ft.Icons.MILITARY_TECH) for pr in done_programs],
                                    wrap=True, spacing=6, run_spacing=6))
-            else:
-                rows.append(text("Пока ни одного — заверши первую программу.", MUTED, 12))
             if active:
-                done = e.program_state()["session"]
+                sessions = e.program_state()["session"]
+                program_bar = bar(sessions / TOTAL_SESSIONS, ACCENT, 6)
+                if animate:
+                    self.count_up(program_bar, sessions / TOTAL_SESSIONS, None, delay=0.4)
                 rows += [
-                    ft.Divider(color=LINE, height=1),
-                    stat_row("Сейчас осваиваю", active.name, leading=ft.Icons.SCHOOL),
-                    bar(done / TOTAL_SESSIONS, ACCENT, 6),
-                    text(f"{done} из {TOTAL_SESSIONS} тренировок", MUTED, 12, mono=True),
+                    ft.Row([text(f"Осваиваю: {active.name}", TEXT, 13, ft.FontWeight.W_600),
+                            text(f"{sessions}/{TOTAL_SESSIONS}", MUTED, 12, mono=True)],
+                           alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    program_bar,
                 ]
             skills_card = [r(card(rows, GOLD, glow=0.1))]
 
+        def metric(value, caption, color, delay):
+            number = counted(text(value, color, 28, ft.FontWeight.W_800, mono=True), value,
+                             lambda v: str(round(v)), delay=delay)
+            return ft.Column([number, text(caption, MUTED, 12)], spacing=0,
+                             horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+
+        load = e.load().weight_factor
         return [
             r(page_header("Статус", "Профиль игрока")),
             r(hero),
+            *([r(self.points_banner())] if e.unspent_points() else []),
+            r(ft.Column([kicker("Характеристики", MUTED), ft.ResponsiveRow(tiles, spacing=10)], spacing=10)),
+            *([r(self.focus_card())] if e.focus() or e.focus_pending() else []),
             r(self.goals_card()),
             r(self.weight_card()),
             *skills_card,
-            r(ft.Column([kicker("Характеристики", MUTED), ft.ResponsiveRow(tiles, spacing=10)], spacing=10)),
             r(card([
                 kicker("Серия", GOLD),
                 ft.Row([
-                    self.metric(str(e.active_streak()), "подряд", GOLD),
-                    self.metric(str(p["best_streak"]), "рекорд", TEXT),
-                    self.metric(str(len(e.history())), "дней всего", ACCENT),
+                    metric(e.active_streak(), "подряд", GOLD, 0.3),
+                    metric(p["best_streak"], "рекорд", TEXT, 0.4),
+                    metric(len(e.history()), "дней всего", ACCENT, 0.5),
                 ], alignment=ft.MainAxisAlignment.SPACE_AROUND),
                 ft.Divider(color=LINE, height=1),
                 *self.streak_ladder(),
             ], GOLD, glow=0.08)),
             r(card([
                 kicker("Тело", MUTED),
-                stat_row("Вес", f"{p['weight_kg']:.1f} кг", leading=ft.Icons.MONITOR_WEIGHT),
                 stat_row("Рост", f"{p['height_cm']} см", leading=ft.Icons.HEIGHT),
                 stat_row("ИМТ", f"{e.bmi():.1f} · {game.bmi_tier(e.bmi())[1].lower()}", leading=ft.Icons.FAVORITE_BORDER),
-                stat_row(
-                    "Нагрузка",
-                    "стандартная" if e.load().weight_factor == 1 else f"−{round((1 - e.load().weight_factor) * 100)}% из-за веса",
-                    GOLD if e.load().weight_factor < 1 else TEXT,
-                    leading=ft.Icons.SPEED,
-                ),
+                stat_row("Нагрузка", "стандартная" if load == 1 else f"−{round((1 - load) * 100)}% из-за веса",
+                         GOLD if load < 1 else TEXT, leading=ft.Icons.SPEED),
                 ft.Row([
                     ft.Container(content=stat_row(
                         "Пол", e.sex().title if e.sex_known() else "не указан",
@@ -298,10 +379,8 @@ class StatusScreen:
                     ), expand=True),
                     ghost_button("Изменить", lambda _: self.show_sex_dialog(), ACCENT),
                 ], spacing=4),
-                ft.Divider(color=LINE, height=1),
-                kicker("Инвентарь", MUTED),
                 ft.Row(
-                    [pill(x.value, ACCENT, EQUIPMENT_ICONS[x]) for x in equipment] or [text("Без инвентаря", MUTED)],
+                    [pill(x.value, ACCENT, EQUIPMENT_ICONS[x]) for x in equipment] or [text("Без инвентаря", MUTED, 12)],
                     wrap=True, spacing=6, run_spacing=6,
                 ),
             ], glow=0.06)),

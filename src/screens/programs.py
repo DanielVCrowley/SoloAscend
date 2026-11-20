@@ -20,15 +20,33 @@ PROGRAM_ICONS = {
     "front_lever": ft.Icons.SPORTS_GYMNASTICS,
     "handstand": ft.Icons.ACCESSIBILITY_NEW,
     "back_lever": ft.Icons.SWAP_VERT,
+    "first_pullup": ft.Icons.KEYBOARD_ARROW_UP,
+    "pistol": ft.Icons.ACCESSIBILITY,
+    "headstand": ft.Icons.PERSON,
+    "bridge": ft.Icons.SPA,
+    "splits": ft.Icons.OPEN_IN_FULL,
+    "pullover": ft.Icons.SYNC,
+    "hspu": ft.Icons.EMOJI_PEOPLE,
+    "dragon_flag": ft.Icons.FLAG,
 }
+UPSIDE_DOWN = {"handstand", "headstand", "hspu"}  # иконки этих навыков переворачиваются
 PROGRAM_COLORS = {
     "muscle_up": ACCENT_2,
     "planche": GOLD,
     "front_lever": ACCENT,
     "handstand": SUCCESS,
     "back_lever": DANGER,
+    "first_pullup": ACCENT,
+    "pistol": SUCCESS,
+    "headstand": GOLD,
+    "bridge": ACCENT_2,
+    "splits": DANGER,
+    "pullover": ACCENT_2,
+    "hspu": GOLD,
+    "dragon_flag": DANGER,
 }
-DIFFICULTY_COLORS = {"Средняя": ACCENT, "Сложная": DANGER}
+DIFFICULTY_COLORS = {"Лёгкая": SUCCESS, "Средняя": ACCENT, "Сложная": DANGER}
+CATEGORIES = ["Сила", "Баланс", "Гибкость", "Пресс"]
 
 
 class ProgramsScreen:
@@ -59,22 +77,71 @@ class ProgramsScreen:
                 ], spacing=2, expand=True),
             ], spacing=12)], ACCENT_2, glow=0.14)))
 
-        controls.append(r(kicker("Каталог навыков", MUTED)))
-        controls += [r(self.program_tile(p)) for p in prog_data.PROGRAMS]
+        controls.append(r(kicker(f"Каталог навыков · {len(prog_data.PROGRAMS)}", MUTED)))
+        controls.append(r(self.category_filter()))
+        shown = [p for p in prog_data.PROGRAMS if not self.program_filter or p.category == self.program_filter]
+        recommended = self.recommended_categories()
+        shown.sort(key=lambda p: (p.category not in recommended, prog_data.PROGRAMS.index(p)))
+        changed, self.filter_flash = self.filter_flash, False
+        for i, p in enumerate(shown):
+            tile = self.program_tile(p, p.category in recommended)
+            controls.append(self.slide_in(tile, 0.04 + i * 0.05, dy=0.18) if changed else r(tile))
         return controls
+
+    def recommended_categories(self) -> set:
+        """Навыки под цель «Гибкость» и под выбранное направление тренировок."""
+        e = self.engine
+        found = set()
+        if game.Goal.FLEX in e.goals():
+            found.add("Гибкость")
+        focus = e.focus()
+        if focus is game.Stat.STRENGTH:
+            found.add("Сила")
+        elif focus is game.Stat.AGILITY:
+            found |= {"Баланс", "Пресс"}
+        return found
+
+    def category_filter(self):
+        """Фильтр каталога по типу навыка. Выбранный чип подсвечен."""
+        counts = {c: sum(1 for p in prog_data.PROGRAMS if p.category == c) for c in CATEGORIES}
+
+        def pick(value):
+            def handler(_):
+                if self.program_filter == value:
+                    return
+                self.program_filter = value
+                self.filter_flash = True
+                self.render()
+            return handler
+
+        chips = []
+        for value, label in [(None, f"Все {len(prog_data.PROGRAMS)}")] + [(c, f"{c} {counts[c]}") for c in CATEGORIES]:
+            on = self.program_filter == value
+            chips.append(ft.Container(
+                padding=ft.Padding.symmetric(horizontal=12, vertical=7),
+                border_radius=ft.BorderRadius.all(20),
+                bgcolor=alpha(ACCENT, 0.18) if on else alpha(CARD, 0.85),
+                border=ft.Border.all(1, ACCENT if on else LINE),
+                ink=True,
+                on_click=pick(value),
+                content=text(label, TEXT if on else MUTED, 12, ft.FontWeight.W_700 if on else ft.FontWeight.W_500),
+            ))
+        return ft.Row(chips, wrap=True, spacing=6, run_spacing=6)
 
     def program_icon(self, program, size=44):
         color = PROGRAM_COLORS[program.id]
         badge = icon_badge(PROGRAM_ICONS[program.icon], color, size)
-        if program.id == "handstand":
+        if program.id in UPSIDE_DOWN:
             return ft.Container(content=badge, rotate=ft.Rotate(math.pi))
         return badge
 
-    def program_tile(self, program):
+    def program_tile(self, program, recommended=False):
         e = self.engine
         color = PROGRAM_COLORS[program.id]
         active = e.program()
         status = []
+        if recommended:
+            status.append(pill("★ Рекомендуем", GOLD))
         if program.id in e.programs_done():
             status.append(pill("Освоено", GOLD, ft.Icons.MILITARY_TECH))
         if active and active.id == program.id:
@@ -98,7 +165,6 @@ class ProgramsScreen:
                 ], spacing=12),
                 ft.Row([
                     pill(program.difficulty, DIFFICULTY_COLORS.get(program.difficulty, MUTED)),
-                    pill(f"{prog_data.WEEKS} нед · {prog_data.TOTAL_SESSIONS} трен.", MUTED, ft.Icons.CALENDAR_MONTH),
                     pill(equipment, MUTED, ft.Icons.FITNESS_CENTER),
                     *status,
                 ], wrap=True, spacing=6, run_spacing=6),
@@ -228,7 +294,13 @@ class ProgramsScreen:
         if self.rest_end and not self.ptimer:
             controls.append(self.rest_card(slide=bool(self.pflash)))
         # текущее упражнение — первое незавершённое: у него видео запускается само
-        current = next((i for i, d in enumerate(drills) if marks[i] < d.sets), None)
+        pending = [i for i, d in enumerate(drills) if marks[i] < d.sets]
+        if self.ptimer and self.ptimer[0] in pending:
+            current = self.ptimer[0]
+        elif self.focus_drill in pending:
+            current = self.focus_drill
+        else:
+            current = pending[0] if pending else None
         controls += [r(self.drill_card(i, d, marks[i], color, i == current)) for i, d in enumerate(drills)]
 
         if complete:
@@ -240,8 +312,47 @@ class ProgramsScreen:
             controls.append(primary_button("Выполни все подходы", None, ft.Icons.CHECKLIST, disabled=True))
         return controls
 
+    def focus_program_drill(self, index):
+        if self.ptimer:
+            return
+        self.focus_drill = index
+        self.focus_flash = ("drill", index)
+        self.render()
+
+    def drill_row(self, index, drill, marked, color, complete):
+        """Свёрнутое упражнение программы: выполненное — с галочкой, ожидающее — нажатие разворачивает."""
+        flash = self.pflash if self.pflash and self.pflash[0] == index else None
+        tint = SUCCESS if complete else MUTED
+        dots = ft.Row([
+            ft.Container(width=10, height=10, border_radius=5,
+                         bgcolor=SUCCESS if k < marked else None,
+                         border=ft.Border.all(1.5, SUCCESS if k < marked else LINE))
+            for k in range(drill.sets)
+        ], spacing=5)
+        row = ft.Row([
+            icon_badge(ft.Icons.TIMER if drill.seconds else ft.Icons.REPEAT, tint, 34),
+            ft.Column([
+                text(drill.name, TEXT, 14, ft.FontWeight.W_600),
+                text(drill.scheme, MUTED, 11, mono=True),
+            ], spacing=1, expand=True),
+            icon(ft.Icons.CHECK_CIRCLE, SUCCESS, 22) if complete else dots,
+            *([] if complete else [icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, FAINT, 20)]),
+        ], spacing=10)
+        body = ft.Container(
+            ink=not complete,
+            on_click=None if complete else (lambda _: self.focus_program_drill(index)),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            border_radius=ft.BorderRadius.all(16),
+            bgcolor=alpha(SUCCESS, 0.06) if complete else alpha(CARD, 0.85),
+            border=ft.Border.all(1, alpha(SUCCESS, 0.25) if complete else LINE),
+            content=row,
+        )
+        return self.pop_in(body, 0.05, start=0.9, ms=650) if flash else body
+
     def drill_card(self, index, drill, marked, color, current_drill=False):
         complete = marked >= drill.sets
+        if complete or not current_drill:
+            return self.drill_row(index, drill, marked, color, complete)
         flash = self.pflash if self.pflash and self.pflash[0] == index else None
         timing = self.ptimer is not None and self.ptimer[0] == index
         busy = self.ptimer is not None
@@ -322,9 +433,9 @@ class ProgramsScreen:
                                             ft.Icons.CHECK, disabled=busy, height=46, colors=[color, alpha(color, 0.7)])
                 controls.append(action)
 
-        body = ft.Container(content=card(controls, tint, glow=0.04 if complete else 0.1), opacity=0.75 if complete else 1)
-        if flash and complete:
-            return self.pop_in(body, 0.05, start=0.94, ms=700)
+        body = ft.Container(content=card(controls, tint, glow=0.1))
+        if self.focus_flash == ("drill", index):
+            return self.pop_in(body, 0.03, start=0.95, ms=600)
         return body
 
     # ---------- действия ----------

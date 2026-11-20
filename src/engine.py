@@ -272,7 +272,7 @@ class Engine:
         return bool(self.profile) and "goals" in self.profile
 
     def plan(self) -> game.GoalPlan:
-        return game.goal_plan(self.goals())
+        return game.goal_plan(self.goals(), self.focus())
 
     def rest_seconds(self) -> int:
         return self.plan().rest
@@ -287,6 +287,11 @@ class Engine:
         if not p:
             return False
         p["goals"] = [g.key for g in goals]
+        return self._rebuild_today()
+
+    def _rebuild_today(self) -> bool:
+        """Если сегодняшний квест ещё не начат — пересобирает его под новый план. True — применилось сегодня."""
+        p = self.profile
         today_now = not self.quest_accepted() and not self.day_sets(game.today())
         if today_now:
             p["quest_branches_day"] = None
@@ -296,6 +301,42 @@ class Engine:
         if today_now:
             self.ensure_daily_quest()
         return today_now
+
+    # ---------- характеристики и направление ----------
+
+    def unspent_points(self) -> int:
+        return int(self.profile.get("unspent_points", 0)) if self.profile else 0
+
+    def stat_points(self) -> dict:
+        """Очки, вложенные игроком в характеристики при повышениях уровня."""
+        raw = self.profile.get("stat_points", {}) if self.profile else {}
+        return {stat: int(raw.get(stat.name, 0)) for stat in game.Stat}
+
+    def spend_point(self, stat: game.Stat) -> bool:
+        p = self.profile
+        if not p or self.unspent_points() <= 0:
+            return False
+        points = p.setdefault("stat_points", {})
+        points[stat.name] = points.get(stat.name, 0) + 1
+        p["unspent_points"] = self.unspent_points() - 1
+        self._save()
+        return True
+
+    def focus(self):
+        """Направление тренировок до следующего ранга (Stat) или None."""
+        name = self.profile.get("focus") if self.profile else None
+        return game.Stat[name] if name in game.Stat.__members__ else None
+
+    def focus_pending(self) -> bool:
+        return bool(self.profile and self.profile.get("focus_pending"))
+
+    def choose_focus(self, stat: game.Stat) -> bool:
+        """Выбор направления на новом ранге. True — сегодняшний квест уже пересобран."""
+        p = self.profile
+        if not p:
+            return False
+        p.update(focus=stat.name, focus_rank=self.rank().value, focus_pending=False)
+        return self._rebuild_today()
 
     # ---------- ежедневный замер веса ----------
 
@@ -450,21 +491,28 @@ class Engine:
         after = game.level_info(p["total_xp"]).level
         if after <= before:
             return []
+        rank_up = game.rank_for(after) != game.rank_for(before)
+        unlocked = [
+            b for b in game.quest_branches(game.rank_for(after), self.goals(), self.focus())
+            if b not in game.quest_branches(game.rank_for(before), self.goals(), self.focus())
+        ]
+        p["unspent_points"] = p.get("unspent_points", 0) + (after - before)
+        if rank_up:
+            # направление действует до следующего ранга — теперь его нужно выбрать заново
+            p.update(focus=None, focus_pending=True)
         return [Event("level", {
             "level": after,
+            "points": after - before,
             "rank": game.rank_for(after),
-            "rank_up": game.rank_for(after) != game.rank_for(before),
-            "unlocked": [
-                b for b in game.quest_branches(game.rank_for(after), self.goals())
-                if b not in game.quest_branches(game.rank_for(before), self.goals())
-            ],
+            "rank_up": rank_up,
+            "unlocked": unlocked,
         })]
 
     def ensure_daily_quest(self):
         if not self.profile:
             return
         day = game.today()
-        rank, goals = self.rank(), self.goals()
+        rank, goals, focus = self.rank(), self.goals(), self.focus()
         changed = self._migrate_steps()
         if self.applied_load() != self.load():
             # профиль создан до учёта веса или вес меняли вне замера — подгоняем нормы
@@ -472,14 +520,14 @@ class Engine:
             changed = True
         if self.profile.get("quest_branches_day") != day:
             self.profile.update(
-                quest_branches=[b.name for b in game.quest_branches(rank, goals)],
+                quest_branches=[b.name for b in game.quest_branches(rank, goals, focus)],
                 quest_branches_day=day,
             )
             changed = True
         for name, item in self.progress.items():
             if item["quest_day"] != day:
                 item.update(quest_day=day, quest_step=item["step"], quest_target=item["target"],
-                            quest_sets=game.quest_sets(rank, Branch[name], goals), quest_stage=item.get("stage"))
+                            quest_sets=game.quest_sets(rank, Branch[name], goals, focus), quest_stage=item.get("stage"))
                 changed = True
         if changed:
             self._save()
@@ -492,7 +540,7 @@ class Engine:
         p = self.profile
         if p and p.get("quest_branches_day") == game.today():
             return [Branch[name] for name in p["quest_branches"]]
-        return game.quest_branches(self.rank(), self.goals()) if p else []
+        return game.quest_branches(self.rank(), self.goals(), self.focus()) if p else []
 
     def quest(self) -> list:
         day = game.today()
@@ -506,7 +554,7 @@ class Engine:
             items.append(QuestItem(
                 branch=branch,
                 step=game.STEP_BY_ID[pr["quest_step"] if fresh else pr["step"]],
-                sets=pr["quest_sets"] if fresh else game.quest_sets(self.rank(), branch, self.goals()),
+                sets=pr["quest_sets"] if fresh else game.quest_sets(self.rank(), branch, self.goals(), self.focus()),
                 target=pr["quest_target"] if fresh else pr["target"],
                 done=done,
             ))
@@ -601,7 +649,7 @@ class Engine:
         result = {}
         for stat in game.Stat:
             xp = sum(pr["xp"] for name, pr in self.progress.items() if Branch[name].stat is stat)
-            result[stat] = game.stat_value(xp)
+            result[stat] = game.stat_value(xp) + self.stat_points()[stat]
         return result
 
     def history(self) -> list:

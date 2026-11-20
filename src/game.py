@@ -369,31 +369,53 @@ class Goal(Enum):
 
 @dataclass(frozen=True)
 class GoalPlan:
-    """Как цели меняют тренировку."""
+    """Как цели и направление тренировок меняют квест."""
     cardio: bool
     extra_sets: dict
     rest: int
     flex: bool
+    focus: "Stat" = None
 
     @property
     def summary(self) -> list:
         lines = []
+        if self.focus:
+            lines.append(f"Направление «{self.focus.value}»: {FOCUS[self.focus]['line']}")
         if self.cardio:
             lines.append("Кардио в каждом ежедневном квесте")
-        strength = [b for b in (Branch.PUSH, Branch.PULL, Branch.LEGS) if self.extra_sets.get(b)]
-        if strength:
-            lines.append("+1 подход в силовых: " + ", ".join(b.title.lower() for b in strength))
-        if self.extra_sets.get(Branch.CORE):
-            lines.append("+1 подход в коре")
-        if self.extra_sets.get(Branch.CARDIO):
-            lines.append("+1 подход в кардио")
+        by_amount = {}
+        for b in Branch:
+            if self.extra_sets.get(b):
+                by_amount.setdefault(self.extra_sets[b], []).append(b.title.lower())
+        for amount in sorted(by_amount):
+            word = "подход" if amount == 1 else "подхода"
+            lines.append(f"+{amount} {word}: " + ", ".join(by_amount[amount]))
         lines.append(f"Отдых между подходами — {self.rest} с")
         if self.flex:
             lines.append(f"Расширенная заминка (+{len(COOLDOWN_FLEX)} упражнения на растяжку)")
         return lines
 
 
-def goal_plan(goals) -> GoalPlan:
+# Направление тренировок — выбирается на каждом новом ранге и действует до следующего.
+FOCUS = {
+    Stat.STRENGTH: {
+        "branches": (Branch.PUSH, Branch.PULL), "cardio": False, "rest": 15,
+        "line": "больше силовой работы", "hint": "+1 подход в отжиманиях и тяге, отдых чуть дольше",
+    },
+    Stat.AGILITY: {
+        "branches": (Branch.LEGS, Branch.CORE), "cardio": False, "rest": 0,
+        "line": "больше калистеники", "hint": "+1 подход в ногах и коре — контроль тела и баланс",
+    },
+    Stat.VITALITY: {
+        "branches": (Branch.CARDIO,), "cardio": True, "rest": -15,
+        "line": "больше кардио", "hint": "Кардио в каждом квесте, +1 подход, отдых короче",
+    },
+}
+MAX_EXTRA_SETS = 2      # сверх базовых подходов ранга — от целей и направления вместе
+MAX_SETS = 6
+
+
+def goal_plan(goals, focus=None) -> GoalPlan:
     goals = set(goals or [])
     fast = goals & {Goal.LOSE, Goal.DEFINE, Goal.ENDURANCE}
     extra = {}
@@ -412,19 +434,31 @@ def goal_plan(goals) -> GoalPlan:
         rest = 45
     else:
         rest = REST_SECONDS
-    return GoalPlan(cardio=bool(fast), extra_sets=extra, rest=rest, flex=Goal.FLEX in goals)
+    cardio = bool(fast)
+    if focus in FOCUS:
+        effect = FOCUS[focus]
+        for b in effect["branches"]:
+            extra[b] = min(MAX_EXTRA_SETS, extra.get(b, 0) + 1)
+        cardio = cardio or effect["cardio"]
+        rest = min(120, max(30, rest + effect["rest"]))
+    return GoalPlan(cardio=cardio, extra_sets=extra, rest=rest, flex=Goal.FLEX in goals, focus=focus)
 
 
-def quest_branches(rank: Rank, goals=None) -> list:
-    plan = goal_plan(goals)
+def quest_branches(rank: Rank, goals=None, focus=None) -> list:
+    plan = goal_plan(goals, focus)
     return [
         b for b in Branch
         if RANKS.index(rank) >= RANKS.index(QUEST_UNLOCK[b]) and (b is not Branch.CARDIO or plan.cardio)
     ]
 
 
-def quest_sets(rank: Rank, branch: Branch, goals=None) -> int:
-    return sets_for(rank) + goal_plan(goals).extra_sets.get(branch, 0)
+def quest_sets(rank: Rank, branch: Branch, goals=None, focus=None) -> int:
+    return min(MAX_SETS, sets_for(rank) + goal_plan(goals, focus).extra_sets.get(branch, 0))
+
+
+def next_rank(rank: Rank):
+    i = RANKS.index(rank)
+    return RANKS[i + 1] if i + 1 < len(RANKS) else None
 
 
 def today() -> int:

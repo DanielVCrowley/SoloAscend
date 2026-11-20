@@ -83,6 +83,53 @@ class AnimMixin:
             except Exception:
                 return
 
+    def count_up(self, control, end, fmt=None, start=0.0, ms=900, delay=0.2, attr="value"):
+        """Число или полоса «досчитывается» от start до end после отрисовки (ease-out).
+        fmt(v) превращает число в текст; для полос и колец fmt=None — значение ставится как есть."""
+        setattr(control, attr, fmt(start) if fmt else start)
+        self.counters.append((control, attr, float(start), float(end), fmt, ms, delay))
+        return control
+
+    async def play_counters(self, items, generation):
+        started = time.monotonic()
+        while True:
+            now = time.monotonic() - started
+            finished = True
+            for control, attr, start, end, fmt, ms, delay in items:
+                t = (now - delay) / (ms / 1000)
+                if t < 1:
+                    finished = False
+                t = min(max(t, 0.0), 1.0)
+                value = start + (end - start) * (1 - (1 - t) ** 3)
+                setattr(control, attr, fmt(value) if fmt else value)
+            if generation != self.generation:
+                return
+            try:
+                self.page.update()
+            except Exception:
+                return
+            if finished:
+                return
+            await asyncio.sleep(0.03)
+
+    def spinner(self, size, color, ms_per_turn=2600):
+        """Светящееся кольцо-«комета», которое непрерывно вращается. Одна долгая анимация
+        поворота на стороне Flutter — без постоянных обновлений из Python."""
+        turns = 400
+        ring_ = ft.Container(
+            width=size,
+            height=size,
+            border_radius=size / 2,
+            gradient=ft.SweepGradient(
+                colors=[ft.Colors.with_opacity(0.0, color), ft.Colors.with_opacity(0.95, color),
+                        ft.Colors.with_opacity(0.0, color)],
+                stops=[0.0, 0.18, 0.36],
+            ),
+            rotate=ft.Rotate(0),
+            animate_rotation=ft.Animation(ms_per_turn * turns, ft.AnimationCurve.LINEAR),
+        )
+        return self.anim(ring_, 0.05, rotate=ft.Rotate(turns * 6.283185307))
+
     async def tween_ring(self, progress, label, counter, start, end, finished, total, generation):
         steps = 24
         for i in range(1, steps + 1):
